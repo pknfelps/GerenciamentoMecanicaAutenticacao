@@ -1,0 +1,30 @@
+# Arquivos locais e segredos
+.env
+.env.*
+!.env.example
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+**/.terraform/
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.pem
+*.key
+secrets.yaml
+db-secrets.yaml
+# Compilação e ferramentas
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+**/TestResults/
+artifacts/
+*.nupkg
+*.snupkg
