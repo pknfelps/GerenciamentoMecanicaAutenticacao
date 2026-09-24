@@ -4,7 +4,7 @@ Repositório da futura função AWS Lambda que valida o CPF de um cliente e emit
 
 ## Estado da implementação
 
-Este repositório contém somente README e arquivos de configuração do Git. **Ainda não há função executável, projeto .NET, testes, Terraform, pipeline ou endpoint publicado.** As instruções de build, execução e deploy serão adicionadas junto dos respectivos artefatos.
+Este repositório contém documentação, configuração do Git e um workflow manual de diagnóstico OIDC. **Ainda não há função executável, projeto .NET, testes da função, Terraform, CI de build ou endpoint publicado.** As instruções de build, execução e deploy serão adicionadas junto dos respectivos artefatos.
 
 A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com Aurora PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` ainda será extraído da aplicação e publicado como pacote NuGet.
 
@@ -69,7 +69,27 @@ Não há comando `dotnet build`, teste ou invocação local aplicável neste che
 
 O workflow deverá compilar, testar e empacotar um ZIP versionado; Terraform/IAM da função pertencerão a este repositório. A entrega AWS usará OIDC e dependerá de rede privada, banco com esquema, credenciais de leitura e segredo JWT. O contrato OpenAPI será publicado junto da versão da função e consumido pela infraestrutura para compor o Gateway.
 
-A observabilidade seguirá OpenTelemetry com extensão Collector local na Lambda e exportação ao New Relic. Versões/compatibilidade e testes de correlação ainda serão verificados. Não há CI ou deploy configurado nesta etapa.
+A observabilidade seguirá OpenTelemetry com extensão Collector local na Lambda e exportação ao New Relic. Versões/compatibilidade e testes de correlação ainda serão verificados. Existe somente o diagnóstico manual OIDC; CI da função e deploy ainda serão implementados.
+
+## Contratos de integração
+
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface do produtor **auth**. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece a fonte de payloads, códigos e claims. A função/publicadores/deploy ainda serão implementados.
+
+| Interface | Responsabilidade da autenticação |
+|---|---|
+| Consome no build | NuGet GerenciamentoMecanica.Auth.Contracts em versão exata e checksum; baixar do S3 para feed local antes do restore |
+| Consome da base | VPC/subnets privadas/SG, JWT por ARN, issuer/audience e configuração New Relic quando habilitada |
+| Consome do banco | Endpoint/porta/database/TLS, schema-version/hash e auth-secret-arn |
+| Resolve no runtime | Credencial de leitura de clientes, chave JWT e ingestão New Relic; não usa a credencial de escrita da API |
+| Publica artefatos | lambda/<commit>/function.zip e contracts/auth/<commit>/openapi.json, cada um com .sha256 |
+| Publica em SSM | /mecanica/<ambiente>/auth/v1/: função/versão/ARN qualificado de invocação, ZIP, OpenAPI, versão do pacote, release e tentativas |
+| Solicita após deploy | Atualização do Gateway via workflow da infraestrutura fixado por SHA; mantém a release da API já implantada |
+
+O build não depende de checkout local da API nem de Aurora ativo; depende da versão do pacote já publicada. A publicação do pacote pela API também não depende desta função, evitando ciclo de bootstrap.
+
+Ready exige atualização Lambda concluída, versão numérica publicada, conectividade e testes de contrato aprovados. Gateway consome o ARN qualificado dessa versão, não $LATEST, e é dono da permissão de invocação. Não é necessário ter Gateway disponível para publicar a primeira release da função.
+
+O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role auth do Environment em develop/hom ou main/prd. Entradas: AWS_REGION, AWS_ROLE_ARN, TF_STATE_BUCKET e ARTIFACTS_BUCKET. Ele comprova autenticação, não substitui CI de .NET, testes funcionais ou validação das permissões de deploy/secrets.
 
 ## Desenvolvimento e ambientes
 
