@@ -1,0 +1,113 @@
+name: aws-oidc-check
+
+# Manual diagnosis only. Publish on the default branch to enable Run workflow.
+# Select develop + hom or main + prd; no AWS resources are provisioned.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment (develop = hom, main = prd)"
+        required: true
+        default: hom
+        type: choice
+        options:
+          - hom
+          - prd
+
+permissions: {}
+
+jobs:
+  authenticate:
+    name: OIDC ${{ matrix.component }} / ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        include:
+          - component: auth
+            role_variable: AWS_ROLE_ARN
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_ACCOUNT: "121754142617"
+      EXPECTED_REPOSITORY: pknfelps/GerenciamentoMecanicaAutenticacao
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      COMPONENT: ${{ matrix.component }}
+      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
+      CONFIGURED_ROLE_ARN: ${{ vars[matrix.role_variable] }}
+      SESSION_NAME: oidc-${{ github.run_id }}-${{ github.run_attempt }}
+      AWS_PAGER: ""
+
+    steps:
+      - name: Validate branch, environment and configured role
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            hom) expected_ref="refs/heads/develop" ;;
+            prd) expected_ref="refs/heads/main" ;;
+            *) echo "::error::Unsupported environment"; exit 1 ;;
+          esac
+
+          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" || "$GITHUB_REF" != "$expected_ref" ]]; then
+            echo "::error::Run this workflow in $EXPECTED_REPOSITORY on $expected_ref for $TARGET_ENVIRONMENT"
+            exit 1
+          fi
+
+          if [[ "$CONFIGURED_REGION" != "us-east-1" ]]; then
+            echo "::error::AWS_REGION must be us-east-1 in the selected Environment"
+            exit 1
+          fi
+
+          expected_role="arn:aws:iam::${EXPECTED_ACCOUNT}:role/mecanica/pipelines/mecanica-${TARGET_ENVIRONMENT}-${COMPONENT}-github"
+          if [[ "$CONFIGURED_ROLE_ARN" != "$expected_role" ]]; then
+            echo "::error::The role variable is missing or does not match the expected component and environment"
+            exit 1
+          fi
+
+      - name: Authenticate with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.CONFIGURED_REGION }}
+          role-to-assume: ${{ env.CONFIGURED_ROLE_ARN }}
+          allowed-account-ids: ${{ env.EXPECTED_ACCOUNT }}
+          audience: sts.amazonaws.com
+          role-session-name: ${{ env.SESSION_NAME }}
+          role-duration-seconds: 900
+          unset-current-credentials: true
+          use-existing-credentials: false
+          output-credentials: false
+          translate-env-variables: false
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Verify assumed identity
+        run: |
+          set -euo pipefail
+          identity="$(aws sts get-caller-identity --output json)"
+          account="$(jq -er '.Account' <<< "$identity")"
+          arn="$(jq -er '.Arn' <<< "$identity")"
+          expected_arn="arn:aws:sts::${EXPECTED_ACCOUNT}:assumed-role/mecanica-${TARGET_ENVIRONMENT}-${COMPONENT}-github/${SESSION_NAME}"
+
+          if [[ "$account" != "$EXPECTED_ACCOUNT" || "$arn" != "$expected_arn" ]]; then
+            echo "::error::AWS returned an unexpected account or assumed role"
+            exit 1
+          fi
+
+          {
+            echo "### OIDC authentication verified"
+            echo ""
+            printf '| Field | Value |\n| --- | --- |\n'
+            printf '| Repository | %s |\n' "$GITHUB_REPOSITORY"
+            printf '| Branch | %s |\n' "$GITHUB_REF"
+            printf '| Environment | %s |\n' "$TARGET_ENVIRONMENT"
+            printf '| Account | %s |\n' "$account"
+            printf '| Assumed role | %s |\n' "$arn"
+            echo ""
+            echo "Authentication only. Resource permissions and deployment were not tested."
+          } >> "$GITHUB_STEP_SUMMARY"
