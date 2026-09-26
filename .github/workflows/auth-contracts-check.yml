@@ -1,0 +1,67 @@
+name: auth-contracts-check
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (develop = hom, main = prd)'
+        required: true
+        default: hom
+        type: choice
+        options: [hom, prd]
+
+permissions: {}
+
+jobs:
+  consume:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      CONFIGURED_REGION: ${{ vars.AWS_REGION }}
+      CONFIGURED_ROLE: ${{ vars.AWS_ROLE_ARN }}
+      ARTIFACTS_BUCKET: ${{ vars.ARTIFACTS_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check target
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in
+            hom) expected_ref="refs/heads/develop" ;;
+            prd) expected_ref="refs/heads/main" ;;
+            *) exit 1 ;;
+          esac
+          [[ "$GITHUB_REPOSITORY" == "pknfelps/GerenciamentoMecanicaAutenticacao" ]]
+          [[ "$GITHUB_REF" == "$expected_ref" ]]
+          [[ "$CONFIGURED_REGION" == "us-east-1" ]]
+          [[ "$CONFIGURED_ROLE" == "arn:aws:iam::121754142617:role/mecanica/pipelines/mecanica-${TARGET_ENVIRONMENT}-auth-github" ]]
+          [[ "$ARTIFACTS_BUCKET" == "mecanica-artifacts-121754142617-us-east-1" ]]
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.CONFIGURED_REGION }}
+          role-to-assume: ${{ env.CONFIGURED_ROLE }}
+          allowed-account-ids: '121754142617'
+          role-duration-seconds: 900
+          unset-current-credentials: true
+          use-existing-credentials: false
+          output-credentials: false
+          translate-env-variables: false
+          disable-retry: true
+          action-timeout-s: 60
+      - name: Download, verify, restore and test exact package
+        shell: pwsh
+        run: ./scripts/Test-AuthContracts.ps1 -Bucket $env:ARTIFACTS_BUCKET -Region $env:CONFIGURED_REGION
+
+      - name: Test rejection of invalid packages offline
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem artifacts/auth-contracts -Filter *.nupkg | Select-Object -First 1
+          ./scripts/tests/Test-AuthContractsDownload.ps1 -PackagePath $package.FullName
