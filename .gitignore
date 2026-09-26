@@ -28,3 +28,9 @@ db-secrets.yaml
 artifacts/
 *.nupkg
 *.snupkg
+
+# Contratos baixados e cache NuGet local
+artifacts/
+**/bin/
+**/obj/
+TestResults/
