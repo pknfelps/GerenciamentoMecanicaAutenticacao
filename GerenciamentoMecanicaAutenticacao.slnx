@@ -9,5 +9,6 @@
     <Project Path="ApplicationTests/ApplicationTests.csproj" />
     <Project Path="ContractTests/ContractTests.csproj" />
     <Project Path="InfrastructureTests/InfrastructureTests.csproj" />
+    <Project Path="FunctionTests/FunctionTests.csproj" />
   </Folder>
 </Solution>

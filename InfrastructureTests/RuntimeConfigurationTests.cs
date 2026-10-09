@@ -1,3 +1,5 @@
+using Amazon.Lambda.APIGatewayEvents;
+using Amazon.Lambda.Core;
 using Amazon;
 using Amazon.SecretsManager;
 using Amazon.SecretsManager.Model;
@@ -437,5 +439,57 @@ public class RuntimeConfigurationTests
         {
             await using var connection = await runtime.Database.OpenConnectionAsync();
         });
+    }
+    [Test]
+    public async Task HandlerReusesLoadedConfigurationWithoutReadingAwsAgain()
+    {
+        await using var handler = new FunctionHandler(new FunctionRuntimeProvider(Bootstrap().InitializeAsync));
+        var context = Substitute.For<ILambdaContext>();
+        context.RemainingTime.Returns(TimeSpan.FromSeconds(15));
+        context.Logger.Returns(Substitute.For<ILambdaLogger>());
+        var request = new APIGatewayProxyRequest
+        {
+            Body = "{\"document\":\"invalid\"}",
+            Headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" }
+        };
+
+        for (var attempt = 0; attempt < 2; attempt++)
+            Assert.That((await handler.HandleAsync(request, context)).StatusCode, Is.EqualTo(400));
+
+        await parameters.Received(1).GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>());
+        await secrets.Received(2).GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>());
+        parameters.Received(1).Dispose();
+        secrets.Received(1).Dispose();
+    }
+
+    [Test]
+    public async Task HandlerDeadlineCancelsAwsInitializationAndDisposesClients()
+    {
+        CancellationToken receivedCancellation = default;
+        parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                receivedCancellation = call.Arg<CancellationToken>();
+                await Task.Delay(Timeout.InfiniteTimeSpan, receivedCancellation);
+                return response;
+            });
+        await using var handler = new FunctionHandler(new FunctionRuntimeProvider(Bootstrap().InitializeAsync));
+        var context = Substitute.For<ILambdaContext>();
+        context.RemainingTime.Returns(TimeSpan.FromSeconds(1.1));
+        context.Logger.Returns(Substitute.For<ILambdaLogger>());
+        var request = new APIGatewayProxyRequest
+        {
+            Body = "{\"document\":\"52998224725\"}",
+            Headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" }
+        };
+
+        var result = await handler.HandleAsync(request, context);
+        await handler.DisposeAsync();
+
+        Assert.That(result.StatusCode, Is.EqualTo(500));
+        Assert.That(receivedCancellation.IsCancellationRequested, Is.True);
+        parameters.Received(1).Dispose();
+        secrets.Received(1).Dispose();
+        Assert.That(result.Body, Does.Not.Contain(FakeKey).And.Not.Contain(FakePassword));
     }
 }
