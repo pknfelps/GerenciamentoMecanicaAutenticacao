@@ -4,15 +4,15 @@ Repositório da futura função AWS Lambda que valida o documento (CPF ou CNPJ n
 
 ## Estado da implementação
 
-Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ContractTests e InfrastructureTests. A parte 2 implementa carregamento inicial de SSM/Secrets e preparação da conexão segura com o RDS. **Ainda não há handler Lambda, endpoint executável, modelos de domínio, interfaces de casos de uso, consulta SQL ou emissão de tokens no fluxo da função.** Terraform e CI/deploy da função permanecem nas próximas entregas.
+Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests e InfrastructureTests. A parte 3 implementa o fluxo interno de validação do documento, consulta de elegibilidade e emissão JWT, usando configuração/conexão da parte 2. **Ainda não há handler Lambda ou endpoint executável.** Terraform, IAM e CI/deploy da função permanecem nas próximas entregas.
 
-A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com RDS PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` foi extraído na API como pacote NuGet 1.0.0. A versão 1.0.0 foi publicada no S3 via OIDC em 2026-09-25; o sucesso do workflow de consumo remoto foi confirmado pelo mantenedor. A Infrastructure já referencia essa versão exata do pacote; seus adaptadores e o uso no fluxo da Lambda serão implementados posteriormente.
+A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com RDS PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` foi extraído na API como pacote NuGet 1.0.0. A versão 1.0.0 foi publicada no S3 via OIDC em 2026-09-25; o sucesso do workflow de consumo remoto foi confirmado pelo mantenedor. A Infrastructure referencia essa versão exata do pacote e já implementa os adaptadores de normalização e emissão JWT. O uso pelo handler Lambda será integrado posteriormente.
 
 ## Estrutura da solução
 
-A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos de produção, ContractTests independente e InfrastructureTests para configuração, conexão e composição. As dependências das camadas de produção seguem esta organização:
+A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos de produção, ApplicationTests para domínio/caso de uso, ContractTests independente e InfrastructureTests para configuração, adaptadores e integração PostgreSQL. As dependências das camadas de produção seguem esta organização:
 
-| Projeto | Responsabilidade futura | Referências de projetos |
+| Projeto | Responsabilidade | Referências de projetos |
 |---|---|---|
 | [Domain](Domain/Domain.csproj) | Modelos e regras do domínio da autenticação | Nenhuma |
 | [Application](Application/Application.csproj) | Casos de uso e interfaces de consulta/emissão | Domain |
@@ -21,7 +21,7 @@ A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos 
 
 Todos são bibliotecas net10.0, com nullable e implicit usings habilitados. Assemblies e namespaces usam o prefixo GerenciamentoMecanica.Autenticacao seguido do nome da camada. Domain e Application não dependem de AWS, banco ou tipos Lambda. Infrastructure é a camada de produção que referencia Auth.Contracts [1.0.0]; ContractTests continua consumindo o pacote diretamente e sem referência aos projetos de produção.
 
-Não há classes ou interfaces de exemplo. Infrastructure contém o carregador e a configuração tipada; Function contém o bootstrap assíncrono e o contexto descartável. A próxima parte acrescentará modelos, interfaces, validação de documentos, consulta de elegibilidade e emissão JWT. InfrastructureTests cobre a implementação atual com respostas AWS simuladas e credenciais fictícias.
+Não há classes ou interfaces de exemplo; cada classe, interface ou enum tem arquivo próprio. Domain define identidade/status e elegibilidade; Application define interfaces e o caso de uso; Infrastructure adapta documentos, PostgreSQL e JWT; Function compõe o caso de uso no contexto descartável. A próxima parte implementará o handler Lambda e seu contrato HTTP.
 
 ## Responsabilidades e limites
 
@@ -72,11 +72,11 @@ O diagrama não representa uma implantação existente. Casos de documento invá
 
 A fonte completa é o [contrato de acesso e autenticação](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md). A função usará HS256, expiração de dez minutos, issuer/audience/chave compatíveis com a API do mesmo ambiente e claims obtidas do cadastro. Configuração secreta ficará no Secrets Manager.
 
-O Init.sql do repositório de banco já contém o campo customers.status, com valor inicial Active, e a credencial mecanica_auth tem SELECT restrito a id, name, document e status. Esquema e credenciais foram entregues e validados em hom. A consulta pela Lambda será implementada nas próximas partes.
+O Init.sql do repositório de banco já contém o campo customers.status, com valor inicial Active, e a credencial mecanica_auth tem SELECT restrito a id, name, document e status. Esquema e credenciais foram entregues e validados em hom. A consulta já está implementada no fluxo interno; execução pela Lambda e validação real AWS permanecem pendentes.
 
 ## Pré-requisitos e execução
 
-Para compilar esta entrega, usar .NET SDK 10 e o pacote GerenciamentoMecanica.Auth.Contracts 1.0.0 no feed local artifacts/auth-contracts. Os comandos abaixo partem da raiz do repositório e pressupõem o pacote já obtido e validado pelo procedimento de consumo. Restore, build e testes não precisam de banco ativo nem de configuração AWS/JWT.
+Para compilar esta entrega, usar .NET SDK 10 e o pacote GerenciamentoMecanica.Auth.Contracts 1.0.0 no feed local artifacts/auth-contracts. Os comandos abaixo partem da raiz do repositório e pressupõem o pacote já obtido e validado pelo procedimento de consumo. Restore/build/publish e testes unitários não precisam de banco ativo nem de configuração AWS/JWT. Os testes de integração exigem Docker Desktop com engine Linux ativo; Testcontainers obtém postgres:16.15, cria um banco local descartável e o remove ao final. Esses testes usam credenciais fictícias, sem acesso AWS/RDS, e não são ignorados quando Docker está indisponível.
 
 Executar com as ferramentas padrão do .NET:
 
@@ -108,9 +108,23 @@ A leitura completa tem prazo de oito segundos, com cancelamento externo e retry 
 
 A conexão usa Npgsql 10.0.2, NpgsqlConnectionStringBuilder, TLS VerifyFull, GssEncryptionMode=Disable, Pooling=false, timeout de conexão e de comando de cinco segundos. O certificado público [rds-ca.pem](Infrastructure/Certificates/rds-ca.pem) é o mesmo usado pelo banco e é copiado para Certificates/rds-ca.pem no build/publish. Sua ausência interrompe o carregamento; manter a CA atualizada quando a configuração do RDS mudar.
 
-Inicializar o contexto ou criar o data source não abre conexão. O futuro handler deverá inicializar uma vez por ambiente de execução e reutilizar o FunctionRuntime, sem novas leituras AWS por operação. Cada consulta futura usará Database.OpenConnectionAsync com cancelamento e await using para encerrar a conexão inclusive em erro. FunctionRuntime implementa IDisposable/IAsyncDisposable e descarta seu data source; o bootstrap descarta os clientes AWS no sucesso e em falha. Uma mudança de Secret/configuração exige nova inicialização do contexto, sem recarga automática.
+Inicializar o contexto ou criar o data source não abre conexão. O futuro handler deverá inicializar uma vez por ambiente de execução e reutilizar o FunctionRuntime, sem novas leituras AWS por operação. O adaptador de consulta já usa Database.OpenConnectionAsync com cancelamento e await using para encerrar a conexão inclusive em erro. FunctionRuntime implementa IDisposable/IAsyncDisposable e descarta seu data source; o bootstrap descarta os clientes AWS no sucesso e em falha. Uma mudança de Secret/configuração exige nova inicialização do contexto, sem recarga automática.
 
 InfrastructureTests valida carregamento hom/prd, erros, cancelamento/prazo, mensagens sem segredos, parâmetros, AWSCURRENT, conexão preparada e descarte. Os testes não consultam AWS nem abrem conexão com RDS. Conseguir ler SSM/Secrets localmente não fornece acesso de rede ao RDS privado; IAM, rede e conexão real TLS serão conferidos após a entrega de infraestrutura/deploy. Não há inicialização de schema, seeds, grants ou usuário no código da aplicação.
+
+## Fluxo interno de autenticação — parte 3
+
+FunctionRuntime.Authentication expõe [ValidateCustomerDocumentUseCase](Application/Authentication/ValidateCustomerDocumentUseCase.cs), com ExecuteAsync(document, cancellationToken). Não há entrada HTTP; o resultado interno distingue InvalidDocument, NotEligible e Authenticated. Somente Authenticated contém token, e o objeto de resultado não o imprime em ToString. O futuro handler mapeará os resultados para 400, 401 e 200 com token como string JSON, respectivamente.
+
+A sequência é cancelamento, validação/normalização do documento, consulta do cadastro, elegibilidade e emissão. Documento inválido não consulta o banco; cadastro ausente ou Inactive não emite token. Falhas SQL, corrupção de dados e cancelamento propagam como falhas técnicas, sem serem convertidos em 400/401. Não são registrados documento, token, senha ou string de conexão.
+
+O [normalizador](Infrastructure/Documents/CustomerDocumentNormalizer.cs) aceita somente CPF ASCII de 11 dígitos ou máscara XXX.XXX.XXX-XX e CNPJ numérico ASCII de 14 dígitos ou máscara XX.XXX.XXX/XXXX-XX. Rejeita espaços, letras, caracteres extras e máscaras incorretas antes de delegar os dígitos verificadores/canonização a DocumentRules. Preserva as sequências repetidas aceitas pelo pacote; não adiciona suporte a CNPJ alfanumérico nem altera o pacote compartilhado.
+
+CustomerIdentity contém ID, nome, documento canônico e CustomerStatus Active/Inactive. Identidade vazia, nome/documento inválido ou status desconhecido não podem originar token. O [adaptador PostgreSQL](Infrastructure/Persistence/PostgreSqlCustomerLookup.cs) usa Dapper 2.1.79 e SQL fixo, selecionando somente id, name, document e status de public.customers pelo parâmetro Document. Não consulta telefone/email, não filtra Inactive no SQL e não escreve dados. QuerySingleOrDefaultAsync rejeita resultados múltiplos; status desconhecido ou cadastro corrompido são falhas técnicas. A conexão e o comando aceitam cancelamento, o comando tem timeout de cinco segundos e a conexão é descartada inclusive em erro.
+
+O [emissor JWT](Infrastructure/Authentication/CustomerTokenIssuer.cs) delega ao JwtIssuer do pacote fixado em [1.0.0]. ID/nome vêm do cadastro, role é sempre Customer e issuer/audience/chave vêm da configuração inicial. A expiração é UTC + dez minutos, com HS256, Name, Role e NameIdentifier. Nenhuma entrada escolhe ID, role, issuer, audience ou expiração; não há refresh token ou sessão persistida. O emissor aceita TimeProvider para testes.
+
+ApplicationTests usa dependências substituídas para testar o caso de uso. InfrastructureTests testa documentos, tokens reais e uma fixture PostgreSQL 16.15 em Docker, com mecanica_auth limitado às quatro colunas. Verifica SQL parametrizado, status/cadastro inválido, duplicatas, cancelamento, timeout, fechamento das conexões e proibição de leitura de telefone/email ou escrita. A fixture cria somente dados/schema de teste em C#, sem copiar Init.sql nem criar scripts. Conexão sem TLS é exclusiva da fixture local; não muda o TLS VerifyFull de produção e não comprova IAM/rede/CA do RDS. ContractTests permanece independente.
 
 ## Consumo do Auth.Contracts
 
@@ -131,7 +145,7 @@ Os scripts e workflows atuais de diagnóstico/consumo permanecem preservados nes
 
 O [workflow auth-contracts-check](.github/workflows/auth-contracts-check.yml) valida download e consumo com a role auth em develop/hom ou main/prd. Requer workflow disponível na branch padrão para acionamento manual. Não provisiona nem publica Lambda. As variáveis usadas são AWS_REGION, AWS_ROLE_ARN e ARTIFACTS_BUCKET já existentes.
 
-O pacote oferece DocumentRules para identificar/validar CPF ou CNPJ numérico e CpfRules/CnpjRules para usos específicos, preservando os cálculos do legado. O campo document aceita os dois formatos, com ou sem máscara. A validação estrita do formato HTTP, consulta de clientes/status e emissão a partir da identidade do cadastro ainda serão implementadas. Os testes atuais comprovam o consumo binário de documentos CPF/CNPJ e JWT, não a autenticação completa.
+O pacote oferece DocumentRules para identificar/validar CPF ou CNPJ numérico e CpfRules/CnpjRules para usos específicos, preservando os cálculos do legado. O campo document aceita os dois formatos, com ou sem máscara. O fluxo interno já valida o formato estrito do documento, consulta clientes/status e emite a partir da identidade do cadastro. Parsing/validação do corpo HTTP ainda serão implementados no handler. Os testes atuais comprovam o consumo binário de documentos CPF/CNPJ e JWT, não a autenticação completa.
 
 Procedimento do produtor e regras de versionamento: [operação do pacote](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/PACOTE_AUTH_CONTRACTS.md). Publicação do pacote independe de deploy da API/RDS; os ambientes reutilizam a mesma versão imutável.
 
@@ -177,6 +191,6 @@ A reformulação declarativa mantém os testes de negócio e o consumo imutável
 
 ## Preparação JWT — E2.12
 
-Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Carregamento JWT da autenticação implementado e testado localmente; integração ao handler Lambda, emissão e comprovação real em hom/prd permanecem pendentes. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
+Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Carregamento JWT da autenticação implementado e testado localmente; emissão JWT do fluxo interno também testada localmente; integração ao handler Lambda e comprovação real em hom/prd permanecem pendentes. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
 
-Na implementação posterior da Lambda, sua role terá leitura somente do JWT e da credencial auth do ambiente. O bootstrap já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. Emissão futura preservará HS256, expiração de dez minutos, claims e tolerância de relógio da API. Function continua sendo biblioteca sem entrada invocável; handler, role de execução e deploy Lambda serão implementados posteriormente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
+Na implementação posterior da Lambda, sua role terá leitura somente do JWT e da credencial auth do ambiente. O bootstrap já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. A emissão interna usa JwtIssuer do pacote 1.0.0, com HS256, expiração de dez minutos, ID/nome do cadastro e role Customer. As opções de validação/tolerância de relógio da API permanecem iguais. Function continua sendo biblioteca sem entrada invocável; handler, role de execução e deploy Lambda serão implementados posteriormente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).

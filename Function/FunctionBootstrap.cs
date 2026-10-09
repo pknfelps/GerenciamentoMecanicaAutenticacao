@@ -46,15 +46,19 @@ public sealed class FunctionBootstrap
     {
         var environment = RuntimeEnvironment.Parse(
             readEnvironment("Runtime__Environment"), readEnvironment("AWS_REGION"));
+        
         cancellationToken.ThrowIfCancellationRequested();
+        
         try
         {
             var region = RegionEndpoint.GetBySystemName(environment.Region);
             using var parameters = createParameters(region);
             using var secrets = createSecrets(region);
             var certificate = Path.Combine(AppContext.BaseDirectory, "Certificates", "rds-ca.pem");
+            
             var configuration = await new AwsRuntimeConfigurationLoader(parameters, secrets)
                 .LoadAsync(environment, certificate, cancellationToken);
+            
             return new FunctionRuntime(configuration);
         }
         catch (Exception)

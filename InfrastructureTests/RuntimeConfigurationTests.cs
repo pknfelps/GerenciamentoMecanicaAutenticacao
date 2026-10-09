@@ -35,13 +35,13 @@ public class RuntimeConfigurationTests
         secrets = Substitute.For<IAmazonSecretsManager>();
         certificate = Path.Combine(AppContext.BaseDirectory, "Certificates", "rds-ca.pem");
         jwtJson = JsonSerializer.Serialize(new { key = FakeKey });
-        
+
         databaseJson = JsonSerializer.Serialize(new
         {
             username = "mecanica_auth", password = FakePassword,
             host = "old.invalid", port = 9999, dbname = "old_database"
         });
-        
+
         var values = new Dictionary<string, string>
         {
             ["base/v2/jwt-secret-arn"] = SecretArn("base/jwt"),
@@ -54,7 +54,7 @@ public class RuntimeConfigurationTests
             ["database/v2/auth-db-user"] = "mecanica_auth",
             ["database/v2/ssl-mode"] = "verify-full"
         };
-        
+
         response = new GetParametersResponse
         {
             Parameters = values.Select(pair => new Parameter
@@ -62,15 +62,16 @@ public class RuntimeConfigurationTests
                 Name = $"/mecanica/{name}/{pair.Key}", Value = pair.Value, Type = ParameterType.String
             }).ToList()
         };
-        
+
         parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
             .Returns(_ => Task.FromResult(response));
-        
+
         secrets.GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>())
             .Returns(call => Task.FromResult(new GetSecretValueResponse
             {
                 SecretString = call.Arg<GetSecretValueRequest>().SecretId == SecretArn("base/jwt")
-                    ? jwtJson : databaseJson
+                    ? jwtJson
+                    : databaseJson
             }));
     }
 
@@ -111,7 +112,7 @@ public class RuntimeConfigurationTests
         await using var dataSource = configuration.Database.CreateDataSource();
         await using var connection = dataSource.CreateConnection();
         var builder = new NpgsqlConnectionStringBuilder(configuration.Database.ConnectionString);
-        
+
         Assert.Multiple(() =>
         {
             Assert.That(configuration.Jwt.Key, Is.EqualTo(FakeKey));
@@ -131,18 +132,20 @@ public class RuntimeConfigurationTests
             Assert.That(connection.State, Is.EqualTo(ConnectionState.Closed));
             Assert.That(connection.ConnectionString, Does.Not.Contain(FakePassword));
         });
-        
+
         await parameters.Received(1).GetParametersAsync(Arg.Is<GetParametersRequest>(request =>
-            request.WithDecryption == false && request.Names.Count == 9 &&
-            request.Names.ToHashSet().SetEquals(response.Parameters.Select(parameter => parameter.Name))),
+                request.WithDecryption == false && request.Names.Count == 9 &&
+                request.Names.ToHashSet().SetEquals(response.Parameters.Select(parameter => parameter.Name))),
             Arg.Any<CancellationToken>());
-        
+
         await secrets.Received(1).GetSecretValueAsync(Arg.Is<GetSecretValueRequest>(request =>
-            request.SecretId == SecretArn("base/jwt") && request.VersionStage == "AWSCURRENT"), Arg.Any<CancellationToken>());
-        
+                request.SecretId == SecretArn("base/jwt") && request.VersionStage == "AWSCURRENT"),
+            Arg.Any<CancellationToken>());
+
         await secrets.Received(1).GetSecretValueAsync(Arg.Is<GetSecretValueRequest>(request =>
-            request.SecretId == SecretArn("database/auth") && request.VersionStage == "AWSCURRENT"), Arg.Any<CancellationToken>());
-        
+                request.SecretId == SecretArn("database/auth") && request.VersionStage == "AWSCURRENT"),
+            Arg.Any<CancellationToken>());
+
         foreach (var value in new object[] { configuration, configuration.Jwt, configuration.Database })
         {
             Assert.That(value.ToString(), Does.Not.Contain(FakeKey));
@@ -161,12 +164,20 @@ public class RuntimeConfigurationTests
     public void RejectsInvalidEnvironmentBeforeCreatingClients(string? name, string? region)
     {
         var creations = 0;
-        var bootstrap = Bootstrap(name, region, _ => { creations++; return parameters; },
-            _ => { creations++; return secrets; });
+        var bootstrap = Bootstrap(name, region, _ =>
+            {
+                creations++;
+                return parameters;
+            },
+            _ =>
+            {
+                creations++;
+                return secrets;
+            });
         var error = Assert.ThrowsAsync<InvalidOperationException>(() => bootstrap.InitializeAsync());
-        
+
         Assert.That(creations, Is.Zero);
-        
+
         AssertSanitized(error!);
     }
 
@@ -205,17 +216,17 @@ public class RuntimeConfigurationTests
     public void RejectsNonStringAndInvalidParameterResponses()
     {
         Parameter("base/v2/jwt-issuer").Type = ParameterType.SecureString;
-        
+
         Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync());
-        
+
         Configure("hom");
         response.InvalidParameters = ["/invalid"];
-        
+
         Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync());
-        
+
         Configure("hom");
         response.Parameters = null;
-        
+
         Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync());
     }
 
@@ -244,11 +255,13 @@ public class RuntimeConfigurationTests
     [TestCase("database/v2/auth-secret-arn", "hom", "us-east-1", "121754142617", "database/api", "aB1234")]
     [TestCase("database/v2/auth-secret-arn", "hom", "us-east-1", "121754142617", "database/auth", "aB123")]
     [TestCase("database/v2/auth-secret-arn", "hom", "us-east-1", "121754142617", "database/auth", "aB123_")]
-    public void RejectsUnexpectedSecretArn(string field, string name, string region, string account, string resource, string suffix)
+    public void RejectsUnexpectedSecretArn(string field, string name, string region, string account, string resource,
+        string suffix)
     {
-        Parameter(field).Value = $"arn:aws:secretsmanager:{region}:{account}:secret:/mecanica/{name}/{resource}-{suffix}";
+        Parameter(field).Value =
+            $"arn:aws:secretsmanager:{region}:{account}:secret:/mecanica/{name}/{resource}-{suffix}";
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync())!);
-        
+
         Assert.That(secrets.ReceivedCalls(), Is.Empty);
     }
 
@@ -293,14 +306,15 @@ public class RuntimeConfigurationTests
     public void DoesNotExposeAwsErrorPayload(bool secretFailure)
     {
         var payload = $"AWS body {FakePassword} {FakeKey}";
-        
+
         if (secretFailure)
             secrets.GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromException<GetSecretValueResponse>(new AmazonSecretsManagerException(payload)));
         else
             parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
-                .Returns(Task.FromException<GetParametersResponse>(new AmazonSimpleSystemsManagementException(payload)));
-        
+                .Returns(Task.FromException<GetParametersResponse>(
+                    new AmazonSimpleSystemsManagementException(payload)));
+
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync())!);
     }
 
@@ -309,7 +323,7 @@ public class RuntimeConfigurationTests
     {
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
-        
+
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync(cancellation.Token))!);
         Assert.That(parameters.ReceivedCalls(), Is.Empty);
         Assert.That(secrets.ReceivedCalls(), Is.Empty);
@@ -324,7 +338,7 @@ public class RuntimeConfigurationTests
         var pending = LoadAsync(cancellation.Token);
         cancellation.Cancel();
         var error = Assert.ThrowsAsync<InvalidOperationException>(async () => await pending);
-        
+
         AssertSanitized(error!);
     }
 
@@ -334,7 +348,7 @@ public class RuntimeConfigurationTests
         parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
             .Returns(new TaskCompletionSource<GetParametersResponse>().Task);
         var elapsed = Stopwatch.StartNew();
-        
+
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync())!);
         Assert.That(elapsed.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromSeconds(7.5)));
         Assert.That(elapsed.Elapsed, Is.LessThan(TimeSpan.FromSeconds(12)));
@@ -344,13 +358,13 @@ public class RuntimeConfigurationTests
     public async Task BootstrapDisposesClientsAndReturnsReusableUnconnectedContext()
     {
         var bootstrap = Bootstrap();
-        
+
         Assert.That(parameters.ReceivedCalls(), Is.Empty);
-        
+
         await using var runtime = await bootstrap.InitializeAsync();
         await using var first = runtime.Database.CreateConnection();
         await using var second = runtime.Database.CreateConnection();
-        
+
         Assert.Multiple(() =>
         {
             Assert.That(first.State, Is.EqualTo(ConnectionState.Closed));
@@ -359,7 +373,7 @@ public class RuntimeConfigurationTests
             Assert.That(runtime.Jwt.Key, Is.EqualTo(FakeKey));
             Assert.That(runtime.ToString(), Does.Not.Contain(FakePassword).And.Not.Contain(FakeKey));
         });
-        
+
         parameters.Received(1).Dispose();
         secrets.Received(1).Dispose();
         await parameters.Received(1).GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>());
@@ -369,9 +383,9 @@ public class RuntimeConfigurationTests
     public void BootstrapDisposesClientsOnLoadFailure()
     {
         jwtJson = "{";
-        
+
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => Bootstrap().InitializeAsync())!);
-        
+
         parameters.Received(1).Dispose();
         secrets.Received(1).Dispose();
     }
@@ -380,7 +394,7 @@ public class RuntimeConfigurationTests
     public void BootstrapDisposesFirstClientIfSecondFactoryFails()
     {
         var bootstrap = Bootstrap(secretFactory: _ => throw new InvalidOperationException(FakePassword + FakeKey));
-        
+
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => bootstrap.InitializeAsync())!);
         parameters.Received(1).Dispose();
     }
@@ -388,8 +402,9 @@ public class RuntimeConfigurationTests
     [Test]
     public void BootstrapSanitizesFirstClientFactoryFailure()
     {
-        var bootstrap = Bootstrap(parameterFactory: _ => throw new AmazonSimpleSystemsManagementException(FakePassword + FakeKey));
-        
+        var bootstrap =
+            Bootstrap(parameterFactory: _ => throw new AmazonSimpleSystemsManagementException(FakePassword + FakeKey));
+
         AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => bootstrap.InitializeAsync())!);
         Assert.That(secrets.ReceivedCalls(), Is.Empty);
     }
@@ -400,7 +415,7 @@ public class RuntimeConfigurationTests
         await using var runtime = new FunctionRuntime(await LoadAsync());
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
-        
+
         Assert.CatchAsync<OperationCanceledException>(async () =>
         {
             await using var connection = await runtime.Database.OpenConnectionAsync(cancellation.Token);
@@ -412,12 +427,12 @@ public class RuntimeConfigurationTests
     public async Task RuntimeDisposesDataSource(bool asynchronous)
     {
         var runtime = new FunctionRuntime(await LoadAsync());
-        
+
         if (asynchronous)
             await runtime.DisposeAsync();
         else
             runtime.Dispose();
-        
+
         Assert.ThrowsAsync<ObjectDisposedException>(async () =>
         {
             await using var connection = await runtime.Database.OpenConnectionAsync();
