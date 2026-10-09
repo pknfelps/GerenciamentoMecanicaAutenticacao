@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GerenciamentoMecanica.Autenticacao.Infrastructure</AssemblyName>
+    <RootNamespace>GerenciamentoMecanica.Autenticacao.Infrastructure</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Domain/Domain.csproj" />
+    <ProjectReference Include="../Application/Application.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="GerenciamentoMecanica.Auth.Contracts" Version="[1.0.0]" />
+  </ItemGroup>
+</Project>
