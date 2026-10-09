@@ -4,13 +4,13 @@ Repositório da futura função AWS Lambda que valida o documento (CPF ou CNPJ n
 
 ## Estado da implementação
 
-Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, além do projeto ContractTests existente. A entrega atual é somente a estrutura compilável: **ainda não há handler Lambda, endpoint executável, modelos, interfaces, carregamento AWS, consulta SQL ou emissão de tokens no fluxo da função.** Terraform e CI/deploy da função permanecem nas próximas entregas.
+Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ContractTests e InfrastructureTests. A parte 2 implementa carregamento inicial de SSM/Secrets e preparação da conexão segura com o RDS. **Ainda não há handler Lambda, endpoint executável, modelos de domínio, interfaces de casos de uso, consulta SQL ou emissão de tokens no fluxo da função.** Terraform e CI/deploy da função permanecem nas próximas entregas.
 
 A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com RDS PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` foi extraído na API como pacote NuGet 1.0.0. A versão 1.0.0 foi publicada no S3 via OIDC em 2026-09-25; o sucesso do workflow de consumo remoto foi confirmado pelo mantenedor. A Infrastructure já referencia essa versão exata do pacote; seus adaptadores e o uso no fluxo da Lambda serão implementados posteriormente.
 
 ## Estrutura da solução
 
-A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos de produção e ContractTests. As dependências das camadas de produção seguem esta organização:
+A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos de produção, ContractTests independente e InfrastructureTests para configuração, conexão e composição. As dependências das camadas de produção seguem esta organização:
 
 | Projeto | Responsabilidade futura | Referências de projetos |
 |---|---|---|
@@ -21,7 +21,7 @@ A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos 
 
 Todos são bibliotecas net10.0, com nullable e implicit usings habilitados. Assemblies e namespaces usam o prefixo GerenciamentoMecanica.Autenticacao seguido do nome da camada. Domain e Application não dependem de AWS, banco ou tipos Lambda. Infrastructure é a camada de produção que referencia Auth.Contracts [1.0.0]; ContractTests continua consumindo o pacote diretamente e sem referência aos projetos de produção.
 
-Não há classes ou interfaces de exemplo. A próxima parte implementará inicialização e conexão; a seguinte acrescentará modelos, interfaces, validação de documentos, consulta de elegibilidade e emissão JWT. Os testes .NET de comportamento serão acrescentados junto dessas implementações.
+Não há classes ou interfaces de exemplo. Infrastructure contém o carregador e a configuração tipada; Function contém o bootstrap assíncrono e o contexto descartável. A próxima parte acrescentará modelos, interfaces, validação de documentos, consulta de elegibilidade e emissão JWT. InfrastructureTests cobre a implementação atual com respostas AWS simuladas e credenciais fictícias.
 
 ## Responsabilidades e limites
 
@@ -83,11 +83,34 @@ Executar com as ferramentas padrão do .NET:
 ```powershell
 dotnet restore GerenciamentoMecanicaAutenticacao.slnx
 dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-dotnet test ContractTests/ContractTests.csproj -c Release --no-build --no-restore
+dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build --no-restore
 dotnet publish Function/Function.csproj -c Release --no-restore -o artifacts/publish/function
 ```
 
 O publish gera as bibliotecas e suas dependências para inspeção local; não produz uma Lambda invocável nem publica recursos na AWS. Não há dependência de checkout da API. O login interno permanece em POST /authentication na [API da oficina](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
+
+## Inicialização e conexão — parte 2
+
+[FunctionBootstrap](Function/FunctionBootstrap.cs) expõe InitializeAsync com cancelamento. Construir o bootstrap não cria clientes nem acessa AWS; chamar InitializeAsync realiza o carregamento e retorna um FunctionRuntime com configuração JWT e NpgsqlDataSource. Não existe inicializador estático nem handler que dispare esse fluxo automaticamente.
+
+As variáveis obrigatórias são Runtime__Environment=hom|prd e AWS_REGION=us-east-1. Ausência, vazio ou valor diferente interrompe a inicialização antes de criar os clientes AWS. Tanto a futura Lambda quanto uma execução local usarão o mesmo caminho AWS, sem appsettings com chave/senha nem modo local alternativo. O SDK usa a cadeia padrão de credenciais: perfil/sessão compatível localmente e role da futura Lambda, sem chaves no código.
+
+O [carregador](Infrastructure/Configuration/AwsRuntimeConfigurationLoader.cs) recebe clientes AWS pelo construtor. Consulta uma vez os nove parâmetros String públicos com GetParameters e WithDecryption=false:
+
+| Prefixo | Campos |
+|---|---|
+| /mecanica/<ambiente>/base/v2/ | jwt-secret-arn, jwt-issuer, jwt-audience |
+| /mecanica/<ambiente>/database/v2/ | endpoint, port, database-name, auth-secret-arn, auth-db-user, ssl-mode |
+
+Busca somente AWSCURRENT dos Secrets JWT e database/auth. Os ARNs devem corresponder à conta 121754142617, região us-east-1 e ambiente escolhido; nenhum Secret administrativo, database/api ou JWT de outro ambiente é aceito. JWT fornece key com pelo menos 32 caracteres; o Secret do banco fornece username=mecanica_auth e password preenchido. Endpoint, porta e database vêm do SSM, ignorando host/port/dbname antigos do Secret. Parâmetros e campos inválidos impedem a criação do contexto; nenhuma configuração parcial é publicada.
+
+A leitura completa tem prazo de oito segundos, com cancelamento externo e retry Standard de duas novas tentativas por operação. Erros não preservam respostas AWS, JSON, chave, senha, string de conexão ou exceções internas. A configuração tipada usa classes que não imprimem seus campos em ToString. O prazo de oito segundos é o limite da leitura, não uma garantia para toda a fase Init: o limite inicial de dez segundos da Lambda também inclui runtime/extensões. A implantação futura deverá medir esse comportamento.
+
+A conexão usa Npgsql 10.0.2, NpgsqlConnectionStringBuilder, TLS VerifyFull, GssEncryptionMode=Disable, Pooling=false, timeout de conexão e de comando de cinco segundos. O certificado público [rds-ca.pem](Infrastructure/Certificates/rds-ca.pem) é o mesmo usado pelo banco e é copiado para Certificates/rds-ca.pem no build/publish. Sua ausência interrompe o carregamento; manter a CA atualizada quando a configuração do RDS mudar.
+
+Inicializar o contexto ou criar o data source não abre conexão. O futuro handler deverá inicializar uma vez por ambiente de execução e reutilizar o FunctionRuntime, sem novas leituras AWS por operação. Cada consulta futura usará Database.OpenConnectionAsync com cancelamento e await using para encerrar a conexão inclusive em erro. FunctionRuntime implementa IDisposable/IAsyncDisposable e descarta seu data source; o bootstrap descarta os clientes AWS no sucesso e em falha. Uma mudança de Secret/configuração exige nova inicialização do contexto, sem recarga automática.
+
+InfrastructureTests valida carregamento hom/prd, erros, cancelamento/prazo, mensagens sem segredos, parâmetros, AWSCURRENT, conexão preparada e descarte. Os testes não consultam AWS nem abrem conexão com RDS. Conseguir ler SSM/Secrets localmente não fornece acesso de rede ao RDS privado; IAM, rede e conexão real TLS serão conferidos após a entrega de infraestrutura/deploy. Não há inicialização de schema, seeds, grants ou usuário no código da aplicação.
 
 ## Consumo do Auth.Contracts
 
@@ -154,6 +177,6 @@ A reformulação declarativa mantém os testes de negócio e o consumo imutável
 
 ## Preparação JWT — E2.12
 
-Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Consumo pela Lambda e comprovação em prd permanecem pendentes. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
+Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Carregamento JWT da autenticação implementado e testado localmente; integração ao handler Lambda, emissão e comprovação real em hom/prd permanecem pendentes. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
 
-Na implementação posterior da Lambda, sua role terá leitura somente do JWT e da credencial auth do ambiente. Carregar configurações e AWSCURRENT pelo SDK .NET na inicialização, manter em memória e impedir inicialização diante de leitura/configuração inválida, sem fallback local. Preservar HS256, expiração de dez minutos, claims e tolerância de relógio da API. Function contém somente o projeto de biblioteca nesta entrega; handler, inicialização, role de execução e deploy Lambda serão implementados posteriormente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
+Na implementação posterior da Lambda, sua role terá leitura somente do JWT e da credencial auth do ambiente. O bootstrap já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. Emissão futura preservará HS256, expiração de dez minutos, claims e tolerância de relógio da API. Function continua sendo biblioteca sem entrada invocável; handler, role de execução e deploy Lambda serão implementados posteriormente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).

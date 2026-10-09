@@ -34,3 +34,6 @@ artifacts/
 **/bin/
 **/obj/
 TestResults/
+
+# Certificado publico RDS usado no runtime
+!Infrastructure/Certificates/rds-ca.pem
