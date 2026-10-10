@@ -4,7 +4,7 @@ Repositório da função AWS Lambda que valida o documento (CPF ou CNPJ numéric
 
 ## Estado da implementação
 
-Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. A parte 4 implementa o handler Lambda para o fluxo de validação do documento, consulta de elegibilidade e emissão JWT, usando configuração/conexão das partes anteriores. **O handler é invocável, mas ainda não está implantado na AWS nem exposto pelo Gateway.** Terraform, IAM e CI/deploy da função permanecem nas próximas entregas.
+Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. A parte 4 implementa o handler Lambda para o fluxo de validação do documento, consulta de elegibilidade e emissão JWT, usando configuração/conexão das partes anteriores. **O handler é invocável, mas ainda não está implantado na AWS nem exposto pelo Gateway.** A parte 5 prepara Terraform e IAM persistente no bootstrap, validados localmente; aplicação AWS, publicação do ZIP e CI/deploy permanecem na próxima entrega.
 
 A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com RDS PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` foi extraído na API como pacote NuGet 1.0.0. A versão 1.0.0 foi publicada no S3 via OIDC em 2026-09-25; o sucesso do workflow de consumo remoto foi confirmado pelo mantenedor. A Infrastructure referencia essa versão exata do pacote e já implementa os adaptadores de normalização e emissão JWT. O handler Lambda já utiliza esse fluxo, validado localmente.
 
@@ -21,7 +21,7 @@ A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos 
 
 Todos são bibliotecas net10.0, com nullable e implicit usings habilitados. Assemblies e namespaces usam o prefixo GerenciamentoMecanica.Autenticacao seguido do nome da camada. Domain e Application não dependem de AWS, banco ou tipos Lambda. Infrastructure é a camada de produção que referencia Auth.Contracts [1.0.0]; ContractTests continua consumindo o pacote diretamente e sem referência aos projetos de produção.
 
-Não há classes ou interfaces de exemplo; cada classe, interface ou enum tem arquivo próprio. Domain define identidade/status e elegibilidade; Application define interfaces e o caso de uso; Infrastructure adapta documentos, PostgreSQL e JWT; Function compõe o caso de uso no contexto descartável e adapta eventos REST proxy às respostas HTTP. A próxima parte preparará infraestrutura e permissões da Lambda.
+Não há classes ou interfaces de exemplo; cada classe, interface ou enum tem arquivo próprio. Domain define identidade/status e elegibilidade; Application define interfaces e o caso de uso; Infrastructure adapta documentos, PostgreSQL e JWT; Function compõe o caso de uso no contexto descartável e adapta eventos REST proxy às respostas HTTP. A infraestrutura e as permissões da Lambda estão preparadas na parte 5; publicação, workflows e implantação serão a próxima entrega.
 
 ## Responsabilidades e limites
 
@@ -175,15 +175,23 @@ O pacote oferece DocumentRules para identificar/validar CPF ou CNPJ numérico e 
 
 Procedimento do produtor e regras de versionamento: [operação do pacote](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/PACOTE_AUTH_CONTRACTS.md). Publicação do pacote independe de deploy da API/RDS; os ambientes reutilizam a mesma versão imutável.
 
+## Infraestrutura e permissões — parte 5
+
+A [unidade Terraform](terraform/README.md) define Lambda dotnet10/x86_64, 512 MB, timeout quinze segundos, concorrência reservada cinco e versão numérica publicada; log group JSON com retenção sete dias, duas regras de saída do SG reservado e seis parâmetros auth/v2. Artefatos do mesmo commit precisam existir no S3 antes do plan; a versão S3 do ZIP e seu SHA-256 em Base64 são fixados. Não há chave, senha ou string de conexão em variáveis, outputs ou estado.
+
+O bootstrap administra mecanica-<ambiente>-auth-runtime e suas permissões persistentes. A pipeline recebe uma policy gerenciada própria; pode passar essa role apenas à Lambda, sem alterar IAM de execução nem ler Secrets. A base possui subnets/SG, banco permite o ingresso PostgreSQL e auth possui somente egress 5432 para o banco e HTTPS via NAT. Consumidores são descartados antes de banco/base; manter role/permissões e aguardar a limpeza das ENIs antes de retirar a rede.
+
+Terraform init -backend=false, fmt -check e validate validam localmente a unidade. Lockfile cobre Windows/Linux. Bootstrap aplicado, base/banco recriados, Job concluído, artefatos publicados e quota suficiente são pré-requisitos da próxima implantação. Nenhum login, plano AWS, Access Analyzer, apply/destroy, workflow ou publicação foi executado nesta parte. E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas até a comprovação real.
+
 ## CI e deploy planejados
 
-O workflow deverá compilar, testar e empacotar um ZIP versionado; Terraform/IAM da função pertencerão a este repositório. A entrega AWS usará OIDC e dependerá de rede privada, banco com esquema, credenciais de leitura e segredo JWT. O contrato OpenAPI será publicado junto da versão da função e consumido pela infraestrutura para compor o Gateway.
+O workflow deverá compilar, testar e empacotar um ZIP versionado. O Terraform da função pertence a este repositório; role/policy de execução persistem no bootstrap da infraestrutura, para permitir limpeza de ENIs após o destroy auth. A entrega AWS usará OIDC e dependerá de rede privada, banco com esquema, credenciais de leitura e segredo JWT. O contrato OpenAPI será publicado junto da versão da função e consumido pela infraestrutura para compor o Gateway.
 
 A observabilidade seguirá OpenTelemetry com extensão Collector local na Lambda e exportação ao New Relic. Versões/compatibilidade e testes de correlação ainda serão verificados. Existem o diagnóstico manual OIDC e a verificação manual do consumo do pacote; CI da função e deploy ainda serão implementados.
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface do produtor **auth**. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece a fonte de payloads, códigos e claims. O handler já está implementado; Terraform/deploy e validação AWS permanecem pendentes.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface do produtor **auth**. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece a fonte de payloads, códigos e claims. O handler já está implementado; Terraform/IAM estão preparados e validados localmente; publicação/deploy e validação AWS permanecem pendentes.
 
 | Interface | Responsabilidade da autenticação |
 |---|---|
@@ -213,10 +221,10 @@ Todo trabalho parte da `develop` atualizada, com branch de tarefa e PR para `dev
 - [Infraestrutura](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/tree/develop).
 - [Banco](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/tree/develop).
 
-A reformulação declarativa mantém os testes de negócio e o consumo imutável de Auth.Contracts. O futuro Terraform da função consumirá `/mecanica/<ambiente>/base/v2/` e `/mecanica/<ambiente>/database/v2/`, resolvendo `auth-secret-arn` sem usuário administrativo. SSM é configuração, sem atestar prontidão. [ADR 008](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/008-INFRAESTRUTURA-DECLARATIVA.md).
+A reformulação declarativa mantém os testes de negócio e o consumo imutável de Auth.Contracts. O Terraform da função consome `/mecanica/<ambiente>/base/v2/` e `/mecanica/<ambiente>/database/v2/`, resolvendo `auth-secret-arn` sem usuário administrativo. SSM é configuração, sem atestar prontidão. [ADR 008](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/008-INFRAESTRUTURA-DECLARATIVA.md).
 
 ## Preparação JWT — E2.12
 
 Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Carregamento JWT da autenticação implementado e testado localmente; emissão JWT do fluxo interno também testada localmente; integração ao handler Lambda entregue e testada localmente; comprovação real em hom/prd permanece pendente. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
 
-Na implementação posterior da Lambda, sua role terá leitura somente do JWT e da credencial auth do ambiente. O bootstrap já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. A emissão interna usa JwtIssuer do pacote 1.0.0, com HS256, expiração de dez minutos, ID/nome do cadastro e role Customer. As opções de validação/tolerância de relógio da API permanecem iguais. Function continua sendo biblioteca com handler invocável; role de execução e deploy Lambda serão implementados posteriormente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
+A parte 5 define no bootstrap a role persistente com leitura somente de AWSCURRENT do JWT e da credencial auth do ambiente, além dos nove parâmetros públicos do carregador; sua aplicação ainda depende de plano aprovado. O bootstrap da Function já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. A emissão interna usa JwtIssuer do pacote 1.0.0, com HS256, expiração de dez minutos, ID/nome do cadastro e role Customer. As opções de validação/tolerância de relógio da API permanecem iguais. Function continua sendo biblioteca com handler invocável; role de execução está preparada no bootstrap; aplicação e deploy Lambda permanecem pendentes. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
