@@ -4,7 +4,7 @@ Repositório da função AWS Lambda que valida o documento (CPF ou CNPJ numéric
 
 ## Estado da implementação
 
-Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. A parte 4 implementa o handler Lambda para o fluxo de validação do documento, consulta de elegibilidade e emissão JWT, usando configuração/conexão das partes anteriores. **O handler é invocável, mas ainda não está implantado na AWS nem exposto pelo Gateway.** A parte 5 prepara Terraform e IAM persistente no bootstrap, validados localmente; aplicação AWS, publicação do ZIP e CI/deploy permanecem na próxima entrega.
+Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. A parte 4 implementa o handler Lambda para o fluxo de validação do documento, consulta de elegibilidade e emissão JWT, usando configuração/conexão das partes anteriores. **O handler é invocável, mas ainda não está implantado na AWS nem exposto pelo Gateway.** A parte 5 prepara Terraform e IAM persistente no bootstrap, validados localmente; o bootstrap IAM foi aplicado em hom/prd após plano aprovado, e a parte 6 implementa CI, publicação, provisionamento e destroy manuais; a primeira execução e a validação AWS permanecem pendentes.
 
 A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com RDS PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` foi extraído na API como pacote NuGet 1.0.0. A versão 1.0.0 foi publicada no S3 via OIDC em 2026-09-25; o sucesso do workflow de consumo remoto foi confirmado pelo mantenedor. A Infrastructure referencia essa versão exata do pacote e já implementa os adaptadores de normalização e emissão JWT. O handler Lambda já utiliza esse fluxo, validado localmente.
 
@@ -21,7 +21,7 @@ A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos 
 
 Todos são bibliotecas net10.0, com nullable e implicit usings habilitados. Assemblies e namespaces usam o prefixo GerenciamentoMecanica.Autenticacao seguido do nome da camada. Domain e Application não dependem de AWS, banco ou tipos Lambda. Infrastructure é a camada de produção que referencia Auth.Contracts [1.0.0]; ContractTests continua consumindo o pacote diretamente e sem referência aos projetos de produção.
 
-Não há classes ou interfaces de exemplo; cada classe, interface ou enum tem arquivo próprio. Domain define identidade/status e elegibilidade; Application define interfaces e o caso de uso; Infrastructure adapta documentos, PostgreSQL e JWT; Function compõe o caso de uso no contexto descartável e adapta eventos REST proxy às respostas HTTP. A infraestrutura e as permissões da Lambda estão preparadas na parte 5; publicação, workflows e implantação serão a próxima entrega.
+Não há classes ou interfaces de exemplo; cada classe, interface ou enum tem arquivo próprio. Domain define identidade/status e elegibilidade; Application define interfaces e o caso de uso; Infrastructure adapta documentos, PostgreSQL e JWT; Function compõe o caso de uso no contexto descartável e adapta eventos REST proxy às respostas HTTP. A infraestrutura e as permissões da Lambda foram preparadas na parte 5. A parte 6 entrega os workflows; publicação e implantação serão iniciadas pelo mantenedor.
 
 ## Responsabilidades e limites
 
@@ -145,31 +145,23 @@ HandleAsync reserva um segundo do RemainingTime para a resposta e propaga cancel
 
 Logs JSON incluem somente lambdaRequestId, gatewayRequestId, status, durationMs e category. Não incluem documento, corpo, JWT, chave, senha, configuração, string de conexão ou mensagem/stack trace de exceções. A observabilidade/tracing completa permanece para E5; nenhuma configuração CloudWatch/New Relic foi criada nesta parte.
 
-[contracts/openapi.json](contracts/openapi.json) é OpenAPI 3.0 estático com additionalProperties=false e respostas 200/400/401/500. A definição não contém URL de ambiente, ARN ou extensão AWS; publicação e composição do Gateway virão posteriormente. Respostas 5xx produzidas pelo próprio Gateway/runtime podem diferir dos erros tratados pelo handler. Para validar o contrato com a ferramenta padrão:
-
-```powershell
-npx --yes @redocly/cli lint contracts/openapi.json --extends=minimal --skip-rule no-empty-servers
-```
-
-A regra de servers é dispensada porque o destino ainda não existe e será fornecido pela infraestrutura. FunctionTests cobre parsing, respostas, serialização REST proxy, prazos e logs. InfrastructureTests acrescenta handler → PostgreSQL local → JWT, reutilização do contexto, retry após falha inicial, descarte e cancelamento da leitura AWS simulada/SQL. Não comprova rede, IAM ou TLS do RDS real. E3.1/E3.2/E2.12 permanecem abertas até implantação e integração AWS.
+[contracts/openapi.json](contracts/openapi.json) é OpenAPI 3.0 estático com additionalProperties=false e respostas 200/400/401/500. A definição não contém URL de ambiente, ARN ou extensão AWS; publicação e composição do Gateway virão posteriormente. Respostas 5xx produzidas pelo próprio Gateway/runtime podem diferir dos erros tratados pelo handler. CI e publicação não executam lint do OpenAPI; o documento permanece versionado e é publicado com checksum. FunctionTests cobre parsing, respostas, serialização REST proxy, prazos e logs. InfrastructureTests acrescenta handler → PostgreSQL local → JWT, reutilização do contexto, retry após falha inicial, descarte e cancelamento da leitura AWS simulada/SQL. Não comprova rede, IAM ou TLS do RDS real. E3.1/E3.2/E2.12 permanecem abertas até implantação e integração AWS.
 ## Consumo do Auth.Contracts
 
-[ContractTests](ContractTests/ContractTests.csproj) fixa o pacote em `[1.0.0]`, sem ProjectReference para a API. [Get-AuthContracts.ps1](scripts/Get-AuthContracts.ps1) verifica sidecar SHA-256, identidade e versão do nuspec antes de atualizar o feed local. [NuGet.Config](NuGet.Config) reserva o ID do pacote para esse feed; [Test-AuthContracts.ps1](scripts/Test-AuthContracts.ps1) usa cache separado pelo hash e executa os testes.
+ContractTests e Infrastructure fixam o pacote em [1.0.0], sem referência ao projeto da API. NuGet.Config reserva seu ID ao feed local artifacts/auth-contracts. CI/publicação usam AWS CLI para baixar nupkg e sidecar do S3, conferem o SHA-256 publicado b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9 e separam o cache pelo hash. Os scripts PowerShell de download/teste foram removidos; a suíte .NET foi preservada.
+
+Para uso local, com AWS CLI autenticada e permissão de leitura do pacote:
 
 ```powershell
-# AWS CLI autenticada; pacote previamente publicado pela API:
-pwsh -File scripts/Test-AuthContracts.ps1 -Bucket mecanica-artifacts-121754142617-us-east-1
-
-# Verificação offline: receber somente nupkg e .sha256, sem fontes da API:
-pwsh -File scripts/Test-AuthContracts.ps1 -PackagePath C:/artefatos/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
-
-# Rejeição de arquivo corrompido, hash/referência inválidos e versão divergente:
-pwsh -File scripts/tests/Test-AuthContractsDownload.ps1 -PackagePath artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
+New-Item -ItemType Directory -Force artifacts/auth-contracts
+aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 --key packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg --expected-bucket-owner 121754142617 artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
+aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 --key packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256 --expected-bucket-owner 121754142617 artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256
+Get-FileHash artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg -Algorithm SHA256
+Get-Content artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256
+$env:NUGET_PACKAGES = Join-Path (Get-Location) artifacts/nuget/b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9
 ```
 
-Os scripts e workflows atuais de diagnóstico/consumo permanecem preservados nesta entrega. Sua simplificação será realizada na parte específica de workflows; não foram criados scripts novos.
-
-O [workflow auth-contracts-check](.github/workflows/auth-contracts-check.yml) valida download e consumo com a role auth em develop/hom ou main/prd. Requer workflow disponível na branch padrão para acionamento manual. Não provisiona nem publica Lambda. As variáveis usadas são AWS_REGION, AWS_ROLE_ARN e ARTIFACTS_BUCKET já existentes.
+Conferir que ambos os hashes correspondem exatamente à referência acima antes do restore. Pacote local antigo da mesma versão exige cache separado. O [procedimento](docs/DEPLOY.md) descreve roles, CI e artefatos imutáveis.
 
 O pacote oferece DocumentRules para identificar/validar CPF ou CNPJ numérico e CpfRules/CnpjRules para usos específicos, preservando os cálculos do legado. O campo document aceita os dois formatos, com ou sem máscara. O fluxo interno já valida o formato estrito do documento, consulta clientes/status e emite a partir da identidade do cadastro. Parsing/validação do corpo HTTP estão implementados na Function. Os testes de contrato do pacote permanecem independentes; os demais projetos testam o fluxo e o handler, inclusive com PostgreSQL local.
 
@@ -183,15 +175,19 @@ O bootstrap administra mecanica-<ambiente>-auth-runtime e suas permissões persi
 
 Terraform init -backend=false, fmt -check e validate validam localmente a unidade. Lockfile cobre Windows/Linux. Bootstrap aplicado, base/banco recriados, Job concluído, artefatos publicados e quota suficiente são pré-requisitos da próxima implantação. Nenhum login, plano AWS, Access Analyzer, apply/destroy, workflow ou publicação foi executado nesta parte. E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas até a comprovação real.
 
-## CI e deploy planejados
+## CI, publicação e deploy — parte 6
 
-O workflow deverá compilar, testar e empacotar um ZIP versionado. O Terraform da função pertence a este repositório; role/policy de execução persistem no bootstrap da infraestrutura, para permitir limpeza de ENIs após o destroy auth. A entrega AWS usará OIDC e dependerá de rede privada, banco com esquema, credenciais de leitura e segredo JWT. O contrato OpenAPI será publicado junto da versão da função e consumido pela infraestrutura para compor o Gateway.
+Quatro workflows substituem diagnóstico OIDC e consumo manual antigos: auth-ci em PRs develop/main e manual; auth-publish manual empacota/publica ZIP/OpenAPI; auth-provision e auth-destroy usam plano salvo, aprovação e apply. Publicação e Terraform são separados. Sem apply por push, scripts operacionais próprios ou leitura de valores de Secrets pela pipeline.
 
-A observabilidade seguirá OpenTelemetry com extensão Collector local na Lambda e exportação ao New Relic. Versões/compatibilidade e testes de correlação ainda serão verificados. Existem o diagnóstico manual OIDC e a verificação manual do consumo do pacote; CI da função e deploy ainda serão implementados.
+A role persistente mecanica-auth-ci-github lê exclusivamente Auth.Contracts 1.0.0 e seu checksum. AWS_CI_ROLE_ARN é variável de repositório; hom/prd usam as roles de deploy existentes. hom-approval/prd-approval têm reviewer obrigatório e nenhuma credencial. Workflows manuais validam develop/hom ou main/prd e serializam operações por ambiente. Actions fixadas por SHA.
+
+Publicação usa dois jobs e o SHA da execução. Terraform recebe environment/artifact_commit, usa o checksum SHA-256 registrado pelo S3 e aplica o plano aprovado sem recompilar ou replanejar. Branch/ambiente são conferidos uma vez no início; não há conferência repetida de quota ou comparação completa pós-apply. Quota suficiente é pré-requisito administrativo, e a conferência funcional ocorre após o deploy. Descarte mantém runtime IAM e artefatos para limpeza posterior de ENIs. [Procedimento completo](docs/DEPLOY.md), incluindo configuração GitHub, pré-requisitos, quota, reexecução e validação real.
+
+Primeira execução manual pelo mantenedor após aplicar a nova role CI e publicar os workflows na branch padrão. Gateway e observabilidade New Relic/OTel continuam entregas posteriores.
 
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface do produtor **auth**. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece a fonte de payloads, códigos e claims. O handler já está implementado; Terraform/IAM estão preparados e validados localmente; publicação/deploy e validação AWS permanecem pendentes.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface do produtor **auth**. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece a fonte de payloads, códigos e claims. O handler já está implementado; Terraform/IAM estão preparados e validados localmente; workflows foram implementados; primeira publicação/deploy e validação AWS permanecem pendentes.
 
 | Interface | Responsabilidade da autenticação |
 |---|---|
@@ -207,7 +203,7 @@ O build não depende de checkout local da API nem de RDS ativo; depende da vers�
 
 A validação operacional exige atualização Lambda concluída, versão numérica publicada, conectividade e testes de contrato aprovados. Gateway consome o ARN qualificado dessa versão, não $LATEST, e é dono da permissão de invocação. Não é necessário ter Gateway disponível para publicar a configuração v2 da função.
 
-O [diagnóstico manual OIDC](.github/workflows/aws-oidc-check.yml) testa a role auth do Environment em develop/hom ou main/prd. Entradas: AWS_REGION, AWS_ROLE_ARN, TF_STATE_BUCKET e ARTIFACTS_BUCKET. Ele comprova autenticação, não substitui CI de .NET, testes funcionais ou validação das permissões de deploy/secrets.
+Os workflows manuais conferem develop/hom ou main/prd no início e usam OIDC com conta restrita; IAM controla a confiança e permissões. Região e buckets são definidos nos arquivos, sem comparações repetidas de strings. Consulte o [procedimento](docs/DEPLOY.md); autenticação e metadados não substituem validação funcional da Lambda/RDS.
 
 ## Desenvolvimento e ambientes
 
@@ -227,4 +223,4 @@ A reformulação declarativa mantém os testes de negócio e o consumo imutável
 
 Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Carregamento JWT da autenticação implementado e testado localmente; emissão JWT do fluxo interno também testada localmente; integração ao handler Lambda entregue e testada localmente; comprovação real em hom/prd permanece pendente. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
 
-A parte 5 define no bootstrap a role persistente com leitura somente de AWSCURRENT do JWT e da credencial auth do ambiente, além dos nove parâmetros públicos do carregador; sua aplicação ainda depende de plano aprovado. O bootstrap da Function já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. A emissão interna usa JwtIssuer do pacote 1.0.0, com HS256, expiração de dez minutos, ID/nome do cadastro e role Customer. As opções de validação/tolerância de relógio da API permanecem iguais. Function continua sendo biblioteca com handler invocável; role de execução está preparada no bootstrap; aplicação e deploy Lambda permanecem pendentes. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
+A parte 5 define no bootstrap a role persistente com leitura somente de AWSCURRENT do JWT e da credencial auth do ambiente, além dos nove parâmetros públicos do carregador; sua aplicação no bootstrap foi concluída após plano aprovado em 2026-10-09. O bootstrap da Function já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. A emissão interna usa JwtIssuer do pacote 1.0.0, com HS256, expiração de dez minutos, ID/nome do cadastro e role Customer. As opções de validação/tolerância de relógio da API permanecem iguais. Function continua sendo biblioteca com handler invocável; role de execução está aplicada no bootstrap; implantação Lambda permanece pendente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
