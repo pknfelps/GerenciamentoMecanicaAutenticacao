@@ -1,0 +1,26 @@
+version = 0.1
+
+[default.global.parameters]
+region = "us-east-1"
+
+[default.build.parameters]
+cached = false
+parallel = false
+
+[hom.deploy.parameters]
+stack_name = "mecanica-hom-auth"
+s3_bucket = "mecanica-artifacts-121754142617-us-east-1"
+s3_prefix = "sam/auth/hom/changesets"
+capabilities = ["CAPABILITY_AUTO_EXPAND"]
+confirm_changeset = false
+fail_on_empty_changeset = false
+disable_rollback = false
+
+[prd.deploy.parameters]
+stack_name = "mecanica-prd-auth"
+s3_bucket = "mecanica-artifacts-121754142617-us-east-1"
+s3_prefix = "sam/auth/prd/changesets"
+capabilities = ["CAPABILITY_AUTO_EXPAND"]
+confirm_changeset = false
+fail_on_empty_changeset = false
+disable_rollback = false

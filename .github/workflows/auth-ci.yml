@@ -3,17 +3,21 @@ on:
   pull_request:
     branches: [develop, main]
   workflow_dispatch:
-    
+
 permissions: {}
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: auth-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-  
+
 env:
   AWS_REGION: us-east-1
   AWS_PAGER: ''
   DOTNET_NOLOGO: 'true'
-  
+  SAM_CLI_TELEMETRY: '0'
+
 jobs:
   dotnet:
     runs-on: ubuntu-24.04
@@ -75,15 +79,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
         with:
-          terraform_version: 1.15.9
-          terraform_wrapper: false
-      - name: Validate Terraform
-        run: |
-          terraform -chdir=terraform fmt -check -recursive
-          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
-          terraform -chdir=terraform validate -no-color
+          version: '1.167.0'
+      - name: Validate SAM template
+        run: sam validate --lint --template-file template.yaml --region "$AWS_REGION"
       - name: Validate workflows
         env:
           ACTIONLINT_VERSION: 1.7.12

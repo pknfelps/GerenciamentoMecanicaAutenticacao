@@ -2,12 +2,17 @@
 
 Repositório da função AWS Lambda que valida o documento (CPF ou CNPJ numérico) de um cliente e emite um JWT para acesso às suas ordens de serviço. O login com senha dos usuários internos permanece na API da oficina.
 
+## Provisionamento com SAM — 2026-10-11
+
+A autenticação usa SAM/CloudFormation com ZIP, conforme [ADR 009](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/009-SAM-AUTENTICACAO.md). [template.yaml](template.yaml) declara os recursos e [samconfig.toml](samconfig.toml) configura as stacks hom/prd. Bootstrap/base/banco/Gateway continuam Terraform; role/policies auth-runtime persistem no bootstrap.
+
+CI/testes .NET/PostgreSQL, pacote Auth.Contracts 1.0.0, HTTP/JWT e conexão segura não mudam. O código Terraform auth foi retirado depois da conferência AWS: nenhuma função/stack/log group/parâmetro auth ou estado atual/histórico em hom/prd. O novo bootstrap precisa de aplicação aprovada; role CI, quota e recriação base/banco/Job continuam pendentes.
+
 ## Estado da implementação
 
-Este repositório contém uma solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. A parte 4 implementa o handler Lambda para o fluxo de validação do documento, consulta de elegibilidade e emissão JWT, usando configuração/conexão das partes anteriores. **O handler é invocável, mas ainda não está implantado na AWS nem exposto pelo Gateway.** A parte 5 prepara Terraform e IAM persistente no bootstrap, validados localmente; o bootstrap IAM foi aplicado em hom/prd após plano aprovado, e a parte 6 implementa CI, publicação, provisionamento e destroy manuais; a primeira execução e a validação AWS permanecem pendentes.
+Solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. Handler, consulta de elegibilidade e emissão JWT estão implementados e testados localmente. A função ainda não está implantada ou exposta pelo Gateway.
 
-A tecnologia definida é .NET 10 em AWS Lambda, empacotada como ZIP, com RDS PostgreSQL e JWT compatível com a API. O contrato compartilhado `GerenciamentoMecanica.Auth.Contracts` foi extraído na API como pacote NuGet 1.0.0. A versão 1.0.0 foi publicada no S3 via OIDC em 2026-09-25; o sucesso do workflow de consumo remoto foi confirmado pelo mantenedor. A Infrastructure referencia essa versão exata do pacote e já implementa os adaptadores de normalização e emissão JWT. O handler Lambda já utiliza esse fluxo, validado localmente.
-
+Infraestrutura SAM e quatro workflows estão preparados. A validação local aprovou 217 testes sem ignorados e build/empacotamento SAM, incluindo certificado RDS. E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas até suas validações reais.
 ## Estrutura da solução
 
 A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos de produção, ApplicationTests para domínio/caso de uso, ContractTests independente e InfrastructureTests para configuração, adaptadores e integração PostgreSQL, e FunctionTests para o contrato HTTP/serialização Lambda. As dependências das camadas de produção seguem esta organização:
@@ -129,7 +134,7 @@ ApplicationTests usa dependências substituídas para testar o caso de uso. Infr
 
 ## Handler Lambda e ciclo de vida — parte 4
 
-[FunctionHandler](Function/FunctionHandler.cs) recebe APIGatewayProxyRequest/ILambdaContext e devolve APIGatewayProxyResponse na integração proxy da REST API, com DefaultLambdaJsonSerializer aplicado ao método. O identificador para a futura configuração Terraform é:
+[FunctionHandler](Function/FunctionHandler.cs) recebe APIGatewayProxyRequest/ILambdaContext e devolve APIGatewayProxyResponse na integração proxy da REST API, com DefaultLambdaJsonSerializer aplicado ao método. O identificador para a futura configuração SAM da Lambda é:
 
 ```text
 GerenciamentoMecanica.Autenticacao.Function::GerenciamentoMecanica.Autenticacao.Function.FunctionHandler::HandleAsync
@@ -167,27 +172,25 @@ O pacote oferece DocumentRules para identificar/validar CPF ou CNPJ numérico e 
 
 Procedimento do produtor e regras de versionamento: [operação do pacote](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/PACOTE_AUTH_CONTRACTS.md). Publicação do pacote independe de deploy da API/RDS; os ambientes reutilizam a mesma versão imutável.
 
-## Infraestrutura e permissões — parte 5
+## Infraestrutura SAM e workflows
 
-A [unidade Terraform](terraform/README.md) define Lambda dotnet10/x86_64, 512 MB, timeout quinze segundos, concorrência reservada cinco e versão numérica publicada; log group JSON com retenção sete dias, duas regras de saída do SG reservado e seis parâmetros auth/v2. Artefatos do mesmo commit precisam existir no S3 antes do plan; a versão S3 do ZIP e seu SHA-256 em Base64 são fixados. Não há chave, senha ou string de conexão em variáveis, outputs ou estado.
+[template.yaml](template.yaml) mantém .NET 10/x86_64, 512 MB, timeout quinze segundos, reserva cinco e logs JSON/sete dias. Reutiliza duas subnets privadas, SG da base e role persistente; administra somente função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. Não cria IAM, Gateway ou Function URL e não contém valores de Secrets.
 
-O bootstrap administra mecanica-<ambiente>-auth-runtime e suas permissões persistentes. A pipeline recebe uma policy gerenciada própria; pode passar essa role apenas à Lambda, sem alterar IAM de execução nem ler Secrets. A base possui subnets/SG, banco permite o ingresso PostgreSQL e auth possui somente egress 5432 para o banco e HTTPS via NAT. Consumidores são descartados antes de banco/base; manter role/permissões e aguardar a limpeza das ENIs antes de retirar a rede.
+| Workflow | Fluxo |
+|---|---|
+| auth-ci | PR/manual: pacote, testes .NET/PostgreSQL, SAM lint e actionlint |
+| auth-publish | Manual: testar/build SAM → upload nativo ZIP e contratos |
+| auth-provision | Manual: validar artefatos/rede → sam deploy direto, sem aprovação intermediária |
+| auth-destroy | Manual: sam delete, removendo ZIP atual/templates operacionais, sem aprovação intermediária |
 
-Terraform init -backend=false, fmt -check e validate validam localmente a unidade. Lockfile cobre Windows/Linux. Bootstrap aplicado, base/banco recriados, Job concluído, artefatos publicados e quota suficiente são pré-requisitos da próxima implantação. Nenhum login, plano AWS, Access Analyzer, apply/destroy, workflow ou publicação foi executado nesta parte. E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas até a comprovação real.
+Publicação e provisionamento são separados. O SHA da publicação fixa código/template; artifact_commit escolhe esse conjunto no deploy. O disparo manual autoriza todo o provisionamento ou descarte, cada um em um job e sem Environment de aprovação. SAM cria/executa as alterações e aguarda o deploy; destroy recebe somente ambiente. Deploy e descarte usam somente SAM, sem comandos CloudFormation diretos. sam delete remove o ZIP referenciado pelo deploy atual e os templates operacionais em sam/auth/<ambiente>/changesets; preserva ZIPs de outras revisões, contratos, bucket, IAM persistente e SG da base. O bucket versionado mantém versões históricas. Republicar o ZIP antes de recriar o deploy; uma falha de exclusão da stack não restaura automaticamente os artefatos removidos.
 
-## CI, publicação e deploy — parte 6
+ZIP usa sam/auth/<ambiente>/<commit>/ com deduplicação SAM/versionamento. Template empacotado e OpenAPI permanecem imutáveis em contracts/auth/<commit>/, com checksum e gravação condicional. A pipeline não lê Secrets; o runtime continua resolvendo SSM/JWT/credencial auth na inicialização.
 
-Quatro workflows substituem diagnóstico OIDC e consumo manual antigos: auth-ci em PRs develop/main e manual; auth-publish manual empacota/publica ZIP/OpenAPI; auth-provision e auth-destroy usam plano salvo, aprovação e apply. Publicação e Terraform são separados. Sem apply por push, scripts operacionais próprios ou leitura de valores de Secrets pela pipeline.
-
-A role persistente mecanica-auth-ci-github lê exclusivamente Auth.Contracts 1.0.0 e seu checksum. AWS_CI_ROLE_ARN é variável de repositório; hom/prd usam as roles de deploy existentes. hom-approval/prd-approval têm reviewer obrigatório e nenhuma credencial. Workflows manuais validam develop/hom ou main/prd e serializam operações por ambiente. Actions fixadas por SHA.
-
-Publicação usa dois jobs e o SHA da execução. Terraform recebe environment/artifact_commit, usa o checksum SHA-256 registrado pelo S3 e aplica o plano aprovado sem recompilar ou replanejar. Branch/ambiente são conferidos uma vez no início; não há conferência repetida de quota ou comparação completa pós-apply. Quota suficiente é pré-requisito administrativo, e a conferência funcional ocorre após o deploy. Descarte mantém runtime IAM e artefatos para limpeza posterior de ENIs. [Procedimento completo](docs/DEPLOY.md), incluindo configuração GitHub, pré-requisitos, quota, reexecução e validação real.
-
-Primeira execução manual pelo mantenedor após aplicar a nova role CI e publicar os workflows na branch padrão. Gateway e observabilidade New Relic/OTel continuam entregas posteriores.
-
+[Procedimento completo](docs/DEPLOY.md): GitHub, bootstrap, quota, publicação, rede, deploy SAM, falhas/rollback e descarte/ENIs. Primeira implantação em hom pelo mantenedor, depois de bootstrap aprovado e dependências provisionadas; sem aprovação adicional no workflow auth.
 ## Contratos de integração
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface do produtor **auth**. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece a fonte de payloads, códigos e claims. O handler já está implementado; Terraform/IAM estão preparados e validados localmente; workflows foram implementados; primeira publicação/deploy e validação AWS permanecem pendentes.
+A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface auth. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) define payloads, códigos e claims. Handler/SAM/workflows validados localmente; IAM runtime aplicado no bootstrap, bootstrap CI/SAM aplicado e conferido em 2026-10-11; publicação/deploy/validação real da Lambda pendentes.
 
 | Interface | Responsabilidade da autenticação |
 |---|---|
@@ -195,8 +198,8 @@ A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSis
 | Consome da base | VPC/subnets privadas/SG, JWT por ARN, issuer/audience e configuração New Relic quando habilitada |
 | Consome do banco | Endpoint/porta/database/TLS, schema-version/hash e auth-secret-arn |
 | Resolve no runtime | Credencial de leitura de clientes, chave JWT e ingestão New Relic; não usa a credencial de escrita da API |
-| Publica artefatos | lambda/<commit>/function.zip e contracts/auth/<commit>/openapi.json, cada um com .sha256 |
-| Publica em SSM | /mecanica/<ambiente>/auth/v2/: configuração Terraform de função/versão/ARN qualificado, ZIP, OpenAPI e versão do pacote; sem releases/tentativas |
+| Publica artefatos | ZIP nativo em sam/auth/<ambiente>/<commit>/; sam-<ambiente>.json/OpenAPI/checksums em contracts/auth/<commit>/ |
+| Publica em SSM | CloudFormation administra /mecanica/<ambiente>/auth/v2/: function-name, function-version numérica, invocation-arn qualificado, zip-key nativo SAM, openapi-key e auth-contracts-version=1.0.0; sem releases/tentativas |
 | Solicita após deploy | Plano e aprovação manual do Gateway com contratos fixos da API e da função |
 
 O build não depende de checkout local da API nem de RDS ativo; depende da versão do pacote já publicada. A publicação do pacote pela API também não depende desta função, evitando ciclo de bootstrap.
@@ -217,7 +220,7 @@ Todo trabalho parte da `develop` atualizada, com branch de tarefa e PR para `dev
 - [Infraestrutura](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/tree/develop).
 - [Banco](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/tree/develop).
 
-A reformulação declarativa mantém os testes de negócio e o consumo imutável de Auth.Contracts. O Terraform da função consome `/mecanica/<ambiente>/base/v2/` e `/mecanica/<ambiente>/database/v2/`, resolvendo `auth-secret-arn` sem usuário administrativo. SSM é configuração, sem atestar prontidão. [ADR 008](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/008-INFRAESTRUTURA-DECLARATIVA.md).
+A reformulação declarativa mantém os testes de negócio e o consumo imutável de Auth.Contracts. A infraestrutura da função continuará consumindo `/mecanica/<ambiente>/base/v2/` e `/mecanica/<ambiente>/database/v2/`, resolvendo `auth-secret-arn` sem usuário administrativo. SSM é configuração, sem atestar prontidão. [ADR 008](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/008-INFRAESTRUTURA-DECLARATIVA.md).
 
 ## Preparação JWT — E2.12
 
