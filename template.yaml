@@ -70,7 +70,6 @@ Resources:
         SecurityGroupIds: [!Ref AuthSecurityGroupId]
       MemorySize: 512
       Timeout: 15
-      ReservedConcurrentExecutions: 10
       AutoPublishAlias: live
       AutoPublishAliasAllProperties: true
       Environment:

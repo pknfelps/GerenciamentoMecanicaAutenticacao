@@ -12,13 +12,13 @@ Antes da primeira execução:
 2. Configurar AWS_CI_ROLE_ARN no repositório com o output auth_ci_role_arn; hom/prd usam AWS_ROLE_ARN. Conta 121754142617, região e bucket estão fixados nos workflows.
 3. Usar hom/prd para variáveis OIDC, com branches develop/main correspondentes. Os workflows auth não referenciam hom-approval/prd-approval nem possuem job de aprovação; o disparo manual autoriza a operação completa.
 4. Publicar os workflows também na branch padrão main, pelo fluxo de PR do mantenedor.
-5. Resolver a quota, recriar base/banco e concluir o Job database-init antes do deploy. Publicar os artefatos do commit antes de executar auth-provision.
+5. Recriar base/banco e concluir o Job database-init antes do deploy. A função usa capacidade compartilhada, sem exigir reserva de concorrência. Publicar os artefatos do commit antes de executar auth-provision.
 
-Quota conferida em 2026-10-11: total/não reservada 10. Primeira tentativa de implantação em 2026-10-12 falhou com reserva cinco: a AWS exigiu mínimo de dez execuções NÃO reservadas e a stack terminou em ROLLBACK_COMPLETE. O mínimo informado não é uma reserva mínima por função.
+Consulta AWS em 2026-10-12, conta 121754142617/us-east-1: ConcurrentExecutions=10, UnreservedConcurrentExecutions=10 e FunctionCount=0. As tentativas com reserva cinco e dez falharam: a AWS exigiu preservar dez execuções NÃO reservadas. A segunda tentativa, artifact_commit 85ca14b331dc15bd9034f065502df6e4496f83a4, terminou em ROLLBACK_COMPLETE. O mínimo informado não é uma reserva mínima por função.
 
-Por decisão do mantenedor em 2026-10-12, testar ReservedConcurrentExecutions: 10 no template comum hom/prd antes de retirar a proteção. Esse ajuste aumenta a reserva da função, não a quota da conta, e pode reproduzir o bloqueio de capacidade não reservada. Não remover a reserva antecipadamente nem implementar fallback automático. Se a nova tentativa falhar por esse motivo, seguir a decisão de removê-la em uma correção posterior. Pedido de quota 110 continua pendente; esta alteração não solicita aumento de quota nem modifica o bootstrap.
+Após a conferência e explicação dos valores, o mantenedor autorizou em 2026-10-12 remover ReservedConcurrentExecutions do template comum hom/prd. A função passa a usar a capacidade compartilhada disponível, sujeita à quota regional da conta; não possui reserva exclusiva nem limite próprio de concorrência. Não configurar zero, pois isso bloquearia invocações. Pedido de quota 110 continua pendente; esta alteração não solicita aumento de quota nem modifica o bootstrap. Se a quota aumentar futuramente, a função poderá executar acima de dez simultaneamente, conforme a capacidade compartilhada disponível.
 
-Após publicar a alteração por PR: auth-destroy para excluir a stack ROLLBACK_COMPLETE → auth-publish na revisão com reserva dez → auth-provision com o NOVO artifact_commit publicado. Usar a revisão antiga ainda implantaria reserva cinco. O destroy remove o ZIP atual; templates/OpenAPI publicados continuam imutáveis por commit. Base/banco podem permanecer provisionados. Execuções AWS continuam manuais pelo mantenedor.
+Após publicar a alteração por PR e concluir auth-destroy da stack ROLLBACK_COMPLETE: auth-publish na revisão sem reserva → auth-provision com o NOVO artifact_commit publicado. Usar as revisões anteriores ainda implantaria reserva cinco ou dez. O destroy remove o ZIP atual; templates/OpenAPI publicados continuam imutáveis por commit. Base/banco podem permanecer provisionados. Execuções AWS continuam manuais pelo mantenedor.
 
 ## CI
 
@@ -106,6 +106,6 @@ Em 2026-10-11: 217 testes aprovados, zero ignorados; build Release e SAM aprovad
 
 Em 2026-10-12: corrigida a leitura de CodeUri nos workflows publish/provision para a URI S3 string produzida pelo SAM. actionlint/ShellCheck aprovados; execução dos trechos reais com Bash/jq em arquivos temporários reproduziu o erro anterior e aprovou 16 cenários: hom/prd válidos e rejeição de bucket, ambiente, commit ou tipo incorreto. Nenhum script de teste foi acrescentado ao repositório e nenhuma operação AWS foi executada nessa correção.
 
-Sequência: bootstrap aplicado → configuração GitHub → quota suficiente → base → banco/Job → publicação → deploy SAM manual → hom. Depois conferir versão numérica, hash do código, concorrência, SSM, logs e invocações inválida/inexistente/elegível sem imprimir documentos/JWT. Repetir o provisionamento sem alterações deve encerrar com sucesso pelo SAM. Validar destroy somente mediante pedido de descarte.
+Sequência: bootstrap aplicado → configuração GitHub → base → banco/Job → publicação → deploy SAM manual → hom. Depois conferir versão numérica, hash do código, ausência de reserva de concorrência, SSM, logs e invocações inválida/inexistente/elegível sem imprimir documentos/JWT. Repetir o provisionamento sem alterações deve encerrar com sucesso pelo SAM. Validar destroy somente mediante pedido de descarte.
 
 E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas para suas comprovações reais. Gateway, compatibilidade real com API e New Relic/OTel continuam entregas posteriores.

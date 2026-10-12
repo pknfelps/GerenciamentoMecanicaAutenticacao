@@ -174,7 +174,7 @@ Procedimento do produtor e regras de versionamento: [operação do pacote](https
 
 ## Infraestrutura SAM e workflows
 
-[template.yaml](template.yaml) mantém .NET 10/x86_64, 512 MB, timeout quinze segundos, reserva dez para a tentativa autorizada em 2026-10-12 e logs JSON/sete dias. Reutiliza duas subnets privadas, SG da base e role persistente; administra somente função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. Não cria IAM, Gateway ou Function URL e não contém valores de Secrets.
+[template.yaml](template.yaml) mantém .NET 10/x86_64, 512 MB, timeout quinze segundos, sem concorrência reservada ou provisionada, usando a capacidade compartilhada da conta e logs JSON/sete dias. Reutiliza duas subnets privadas, SG da base e role persistente; administra somente função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. Não cria IAM, Gateway ou Function URL e não contém valores de Secrets.
 
 | Workflow | Fluxo |
 |---|---|
