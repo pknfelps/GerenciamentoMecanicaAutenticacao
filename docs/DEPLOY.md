@@ -14,7 +14,11 @@ Antes da primeira execução:
 4. Publicar os workflows também na branch padrão main, pelo fluxo de PR do mantenedor.
 5. Resolver a quota, recriar base/banco e concluir o Job database-init antes do deploy. Publicar os artefatos do commit antes de executar auth-provision.
 
-Quota conferida em 2026-10-11: total/não reservada 10 e zero funções. Reserva cinco exige pelo menos 105 no total sem outras reservas; 110 permite hom/prd com cinco cada, preservando cem não reservadas. A solicitação de 110 continua pendente conforme orientação do mantenedor. Nenhuma alteração de quota ou redução automática da reserva. Quota insuficiente bloqueia implantação, não build/publicação.
+Quota conferida em 2026-10-11: total/não reservada 10. Primeira tentativa de implantação em 2026-10-12 falhou com reserva cinco: a AWS exigiu mínimo de dez execuções NÃO reservadas e a stack terminou em ROLLBACK_COMPLETE. O mínimo informado não é uma reserva mínima por função.
+
+Por decisão do mantenedor em 2026-10-12, testar ReservedConcurrentExecutions: 10 no template comum hom/prd antes de retirar a proteção. Esse ajuste aumenta a reserva da função, não a quota da conta, e pode reproduzir o bloqueio de capacidade não reservada. Não remover a reserva antecipadamente nem implementar fallback automático. Se a nova tentativa falhar por esse motivo, seguir a decisão de removê-la em uma correção posterior. Pedido de quota 110 continua pendente; esta alteração não solicita aumento de quota nem modifica o bootstrap.
+
+Após publicar a alteração por PR: auth-destroy para excluir a stack ROLLBACK_COMPLETE → auth-publish na revisão com reserva dez → auth-provision com o NOVO artifact_commit publicado. Usar a revisão antiga ainda implantaria reserva cinco. O destroy remove o ZIP atual; templates/OpenAPI publicados continuam imutáveis por commit. Base/banco podem permanecer provisionados. Execuções AWS continuam manuais pelo mantenedor.
 
 ## CI
 
