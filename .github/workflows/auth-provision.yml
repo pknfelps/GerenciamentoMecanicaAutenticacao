@@ -69,8 +69,12 @@ jobs:
           hash="$(cat "$template.sha256")"
           [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  %s\n' "$hash" "$template" | sha256sum --check --strict
-          test "$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Bucket' "$template")" = mecanica-artifacts-121754142617-us-east-1
-          zip_key="$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Key' "$template")"
+          code_uri="$(jq -er '.Resources.AuthFunction.Properties.CodeUri | select(type == "string")' "$template")"
+          prefix="s3://mecanica-artifacts-121754142617-us-east-1/"
+          case "$code_uri" in
+            "$prefix"*) zip_key="${code_uri#"$prefix"}" ;;
+            *) echo "::error::CodeUri points to an unexpected bucket"; exit 1 ;;
+          esac
           case "$zip_key" in "sam/auth/$TARGET_ENVIRONMENT/$ARTIFACT_COMMIT/"*) ;; *) exit 1 ;; esac
           aws s3api head-object --bucket mecanica-artifacts-121754142617-us-east-1 \
             --expected-bucket-owner 121754142617 --key "$zip_key" --query '{Version:VersionId,Size:ContentLength}'

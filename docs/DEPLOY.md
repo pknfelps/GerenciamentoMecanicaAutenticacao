@@ -27,7 +27,7 @@ Executa restore/build Release e todos os testes .NET/PostgreSQL. Docker indispon
 Disparo manual com environment, somente develop/hom ou main/prd. Dois jobs, checkout do SHA da execução e fila auth-<ambiente> sem cancelamento:
 
 - package usa role CI, verifica pacote e executa testes; sam build compila Function linux-x64/framework-dependent. Confere DLL, deps, runtimeconfig e Certificates/rds-ca.pem. O build e o OpenAPI passam ao segundo job pelo ID do artefato GitHub da mesma execução, retido sete dias, incluindo a pasta .aws-sam.
-- publish usa role auth do Environment. sam package envia o ZIP nativamente a sam/auth/<ambiente>/<commit>/ e produz o template JSON. Não recompila nem constrói manifestos por scripts.
+- publish usa role auth do Environment. sam package envia o ZIP nativamente a sam/auth/<ambiente>/<commit>/ e produz o template JSON. Não recompila nem constrói manifestos por scripts. CodeUri no template empacotado é uma string s3://<bucket>/<chave>; os workflows leem essa URI, exigem o bucket de artefatos e extraem a chave, conferindo ambiente/commit. --use-json define a serialização do template, sem converter CodeUri em objeto Bucket/Key.
 
 O ZIP usa chave de conteúdo gerada pelo SAM, deduplicação e bucket versionado. Esse prefixo tem exceção localizada à exigência If-None-Match; não usar --force-upload. Portanto ele não oferece a garantia de gravação única dos contratos. O workflow registra commit, hash SHA-256 e versão S3 do ZIP obtidos sem executar a função.
 
@@ -99,6 +99,8 @@ actionlint
 ~~~
 
 Em 2026-10-11: 217 testes aprovados, zero ignorados; build Release e SAM aprovados; certificado/dependências/runtimeconfig conferidos. O empacotamento local nativo SAM produziu bytes idênticos em duas execuções sobre o mesmo build. Isso não comprova uploads/reexecução de publicação na AWS, TLS RDS ou deploy SAM real.
+
+Em 2026-10-12: corrigida a leitura de CodeUri nos workflows publish/provision para a URI S3 string produzida pelo SAM. actionlint/ShellCheck aprovados; execução dos trechos reais com Bash/jq em arquivos temporários reproduziu o erro anterior e aprovou 16 cenários: hom/prd válidos e rejeição de bucket, ambiente, commit ou tipo incorreto. Nenhum script de teste foi acrescentado ao repositório e nenhuma operação AWS foi executada nessa correção.
 
 Sequência: bootstrap aplicado → configuração GitHub → quota suficiente → base → banco/Job → publicação → deploy SAM manual → hom. Depois conferir versão numérica, hash do código, concorrência, SSM, logs e invocações inválida/inexistente/elegível sem imprimir documentos/JWT. Repetir o provisionamento sem alterações deve encerrar com sucesso pelo SAM. Validar destroy somente mediante pedido de descarte.
 
