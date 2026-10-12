@@ -15,6 +15,7 @@ public class PackageCompatibilityTests
     public void PackageProducesDatabaseDocumentFormat(string input, string expected, DocumentType type)
     {
         var document = DocumentRules.Parse(input);
+
         Assert.That(document.Type, Is.EqualTo(type));
         Assert.That(document.Value, Is.EqualTo(expected));
         Assert.That(DocumentRules.Normalize(expected), Is.EqualTo(expected));
@@ -43,6 +44,7 @@ public class PackageCompatibilityTests
         var id = Guid.Parse("11111111-2222-3333-4444-555555555555");
         var before = DateTime.UtcNow;
         var token = new JwtIssuer(key, "test-issuer", "test-audience").Generate("cliente", "Customer", id);
+
         var principal = new JwtSecurityTokenHandler().ValidateToken(token, new TokenValidationParameters
         {
             ValidateIssuer = true, ValidIssuer = "test-issuer",
@@ -50,10 +52,12 @@ public class PackageCompatibilityTests
             ValidateLifetime = true, ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key))
         }, out var validated);
+
         Assert.That(principal.Identity!.Name, Is.EqualTo("cliente"));
         Assert.That(principal.IsInRole("Customer"), Is.True);
         Assert.That(principal.FindFirst(ClaimTypes.NameIdentifier)!.Value, Is.EqualTo(id.ToString()));
         Assert.That(((JwtSecurityToken)validated).Header.Alg, Is.EqualTo("HS256"));
-        Assert.That(validated.ValidTo, Is.InRange(before.AddMinutes(10).AddSeconds(-1), DateTime.UtcNow.AddMinutes(10)));
+        Assert.That(validated.ValidTo,
+            Is.InRange(before.AddMinutes(10).AddSeconds(-1), DateTime.UtcNow.AddMinutes(10)));
     }
 }

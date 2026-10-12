@@ -1,0 +1,116 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Autenticação de clientes",
+    "version": "1.0.0",
+    "description": "Valida CPF/CNPJ e elegibilidade do cadastro antes de emitir JWT Customer. A implantação e integração com API Gateway REST serão configuradas separadamente."
+  },
+  "paths": {
+    "/customers/validate": {
+      "post": {
+        "operationId": "validateCustomerDocument",
+        "summary": "Autenticar cliente por documento",
+        "description": "Não exige token prévio. CPF/CNPJ numérico, com ou sem máscara exata; espaços, caracteres extras e dígitos verificadores inválidos são rejeitados. Cadastro inexistente e Inativo retornam a mesma negativa.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["document"],
+                "properties": {
+                  "document": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 18,
+                    "description": "Somente dígitos ASCII: CPF de 11 dígitos ou XXX.XXX.XXX-XX; CNPJ de 14 dígitos ou XX.XXX.XXX/XXXX-XX. Propriedades duplicadas são rejeitadas."
+                  }
+                }
+              },
+              "example": { "document": "529.982.247-25" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cliente Ativo autenticado. JWT HS256 com role Customer e expiração de dez minutos, retornado como string JSON sem envelope.",
+            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+            "content": { "application/json": { "schema": { "type": "string", "description": "JWT assinado." } } }
+          },
+          "400": {
+            "description": "Corpo ou documento inválido, incluindo campos extras/duplicados, Content-Type incompatível ou Base64/UTF-8 inválidos.",
+            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+            "content": {
+              "application/problem+json": {
+                "schema": { "$ref": "#/components/schemas/AuthenticationProblem" },
+                "example": {
+                  "type": "about:blank",
+                  "title": "Requisição inválida",
+                  "status": 400,
+                  "detail": "O corpo ou documento informado é inválido.",
+                  "instance": "/customers/validate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Documento válido sem cliente elegível. Não distingue cadastro inexistente de Inativo.",
+            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+            "content": {
+              "application/problem+json": {
+                "schema": { "$ref": "#/components/schemas/AuthenticationProblem" },
+                "example": {
+                  "type": "about:blank",
+                  "title": "Autenticação não autorizada",
+                  "status": 401,
+                  "detail": "Não foi possível autenticar o cliente.",
+                  "instance": "/customers/validate"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha técnica de configuração/persistência ou cancelamento pelo prazo disponível. Não expõe detalhes internos.",
+            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+            "content": {
+              "application/problem+json": {
+                "schema": { "$ref": "#/components/schemas/AuthenticationProblem" },
+                "example": {
+                  "type": "about:blank",
+                  "title": "Erro interno do servidor",
+                  "status": 500,
+                  "detail": "Não foi possível processar a autenticação.",
+                  "instance": "/customers/validate"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "headers": {
+      "NoStore": {
+        "description": "Impede armazenamento da resposta.",
+        "schema": { "type": "string", "enum": ["no-store"] }
+      }
+    },
+    "schemas": {
+      "AuthenticationProblem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "title", "status", "detail", "instance"],
+        "properties": {
+          "type": { "type": "string", "enum": ["about:blank"] },
+          "title": { "type": "string" },
+          "status": { "type": "integer", "enum": [400, 401, 500] },
+          "detail": { "type": "string" },
+          "instance": { "type": "string", "enum": ["/customers/validate"] }
+        }
+      }
+    }
+  }
+}
