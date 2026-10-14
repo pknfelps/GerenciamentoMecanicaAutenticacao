@@ -45,7 +45,7 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/$branch"
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
       - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
         with:
           version: '1.167.0'
