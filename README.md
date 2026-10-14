@@ -81,7 +81,7 @@ O Init.sql do repositório de banco já contém o campo customers.status, com va
 
 ## Pré-requisitos e execução
 
-Para compilar esta entrega, usar .NET SDK 10 e o pacote GerenciamentoMecanica.Auth.Contracts 1.0.0 no feed local artifacts/auth-contracts. Os comandos abaixo partem da raiz do repositório e pressupõem o pacote já obtido e validado pelo procedimento de consumo. Restore/build/publish e testes unitários não precisam de banco ativo nem de configuração AWS/JWT. Os testes de integração exigem Docker Desktop com engine Linux ativo; Testcontainers obtém postgres:16.15, cria um banco local descartável e o remove ao final. Esses testes usam credenciais fictícias, sem acesso AWS/RDS, e não são ignorados quando Docker está indisponível.
+Para compilar esta entrega, usar .NET SDK 10.0.402, fixado em global.json sem roll-forward automático. auth-ci e auth-publish instalam essa mesma versão a partir do arquivo, evitando recompilar um commit com SDK diferente após uma atualização. Usar o pacote GerenciamentoMecanica.Auth.Contracts 1.0.0 no feed local artifacts/auth-contracts. Os comandos abaixo partem da raiz do repositório e pressupõem o pacote já obtido e validado pelo procedimento de consumo. Restore/build/publish e testes unitários não precisam de banco ativo nem de configuração AWS/JWT. Os testes de integração exigem Docker Desktop com engine Linux ativo; Testcontainers obtém postgres:16.15, cria um banco local descartável e o remove ao final. Esses testes usam credenciais fictícias, sem acesso AWS/RDS, e não são ignorados quando Docker está indisponível.
 
 Executar com as ferramentas padrão do .NET:
 
