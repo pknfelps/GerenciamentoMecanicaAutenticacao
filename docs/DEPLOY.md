@@ -24,13 +24,13 @@ Após publicar a alteração por PR e concluir auth-destroy da stack ROLLBACK_CO
 
 auth-ci roda em PRs develop/main e manual. Usa role CI restrita aos dois objetos Auth.Contracts 1.0.0/checksum, sem Environment de deploy ou leitura de Secrets. Mantém o hash conhecido b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9, feed/mapeamento NuGet e cache separado pelo hash.
 
-Executa restore/build Release e todos os testes .NET/PostgreSQL. Docker indisponível é erro; testes não são ignorados. O segundo job usa sam validate --lint e actionlint 1.7.12. OpenAPI continua estático, sem lint próprio. PR de fork deve ser revisado e trazido a uma branch do repositório para obter o pacote por OIDC; não usar pull_request_target.
+Executa restore/build Release e todos os testes .NET/PostgreSQL. Docker indisponível é erro; testes não são ignorados. O segundo job usa sam validate --lint, valida Function/Observability/collector.yaml com o comando nativo da imagem Contrib 0.151.0 e executa actionlint 1.7.12. Não utiliza permissões de leitura da layer; a role CI continua restrita ao pacote. OpenAPI continua estático, sem lint próprio. PR de fork deve ser revisado e trazido a uma branch do repositório para obter o pacote por OIDC; não usar pull_request_target.
 
 ## Publicar — auth-publish
 
 Disparo manual com environment, somente develop/hom ou main/prd. Dois jobs, checkout do SHA da execução e fila auth-<ambiente> sem cancelamento:
 
-- package usa role CI, verifica pacote e executa testes; sam build compila Function linux-x64/framework-dependent. Confere DLL, deps, runtimeconfig e Certificates/rds-ca.pem. O build e o OpenAPI passam ao segundo job pelo ID do artefato GitHub da mesma execução, retido sete dias, incluindo a pasta .aws-sam.
+- package usa role CI, verifica pacote e executa testes; sam build compila Function linux-x64/framework-dependent. Confere DLL, deps, runtimeconfig, Certificates/rds-ca.pem e Observability/observability.json/collector.yaml. A publicação mantém telemetria desabilitada e não acrescenta instrumentação nem lê Secrets. O build e o OpenAPI passam ao segundo job pelo ID do artefato GitHub da mesma execução, retido sete dias, incluindo a pasta .aws-sam.
 - publish usa role auth do Environment. sam package envia o ZIP nativamente a sam/auth/<ambiente>/<commit>/ e produz o template JSON. Não recompila nem constrói manifestos por scripts. CodeUri no template empacotado é uma string s3://<bucket>/<chave>; os workflows leem essa URI, exigem o bucket de artefatos e extraem a chave, conferindo ambiente/commit. --use-json define a serialização do template, sem converter CodeUri em objeto Bucket/Key.
 
 O ZIP usa chave de conteúdo gerada pelo SAM, deduplicação e bucket versionado. Esse prefixo tem exceção localizada à exigência If-None-Match; não usar --force-upload. Portanto ele não oferece a garantia de gravação única dos contratos. O workflow registra commit, hash SHA-256 e versão S3 do ZIP obtidos sem executar a função.
@@ -47,12 +47,14 @@ Templates/OpenAPI/checksums mantêm SHA-256 do S3 e If-None-Match: *. Em Precond
 
 ## Provisionar — auth-provision
 
-Inputs environment e artifact_commit, SHA completo minúsculo de 40 caracteres, publicado e ancestral da branch selecionada. artifact_commit seleciona código/template juntos; github.sha fixa o workflow/configuração de destino.
+Para ativar, preparar anteriormente no bootstrap o acesso lambda:GetLayerVersion à versão pública fixada e conferir a disponibilidade/compatibilidade da extensão. Essas permissões e sua aplicação não integram esta entrega. Até lá, executar com telemetry_enabled=false. A saída debug basic é somente diagnóstica, não New Relic. Uma nova versão numérica publicada não altera o destino já fixado pelo Gateway: executar gateway-provision com a nova revisão auth para consumir o ARN numérico atualizado.
+
+Inputs environment, artifact_commit (SHA completo minúsculo de 40 caracteres, publicado e ancestral da branch selecionada) e telemetry_enabled (booleano, padrão false). artifact_commit seleciona código/template juntos; github.sha fixa o workflow/configuração de destino.
 
 Um job deploy, sem aprovação intermediária. O disparo manual autoriza executar o fluxo completo:
 
-1. Baixar template/checksum, conferir hash e referência do ZIP. Ler os quatro parâmetros públicos com AWS CLI: base/v2/vpc-id, workload-subnet-ids, auth-security-group-id e database/v2/security-group-id. jq converte o array JSON das subnets para a lista CSV do template. Conferir VPC/ambiente, duas subnets sem IP público automático em AZs distintas e SGs na mesma VPC. Não ler senhas ou JWT.
-2. Executar sam deploy --no-confirm-changeset --no-fail-on-empty-changeset, com configuração do ambiente e parâmetros resolvidos. SAM prepara/executa as alterações, aguarda a conclusão e mostra eventos/outputs; sem comandos CloudFormation diretos, parsing de ARN ou divisão plan/apply.
+1. Baixar template/checksum, conferir hash e referência do ZIP. Exigir Parameters.TelemetryEnabled de tipo String; se ausente, interromper com orientação de publicar uma nova revisão, sem compatibilidade com artefatos antigos. Com telemetry_enabled=true, consultar os metadados da layer extraída do próprio template antes de ler a rede/deploy; mostrar apenas ARN, arquiteturas e tamanho, nunca Content.Location. Layer inexistente ou acesso negado interrompem o job. Com false, essa consulta não ocorre. Ler os quatro parâmetros públicos com AWS CLI: base/v2/vpc-id, workload-subnet-ids, auth-security-group-id e database/v2/security-group-id. jq converte o array JSON das subnets para a lista CSV do template. Conferir VPC/ambiente, duas subnets sem IP público automático em AZs distintas e SGs na mesma VPC. Não ler senhas ou JWT.
+2. Executar sam deploy --no-confirm-changeset --no-fail-on-empty-changeset, com configuração do ambiente, parâmetros resolvidos e TelemetryEnabled=true|false explicitamente. Cada execução determina o estado desejado da nova versão: false desabilita providers e retira a associação da layer nessa versão, sem depender do valor anterior da stack. O resumo mostra ambiente, commit e ativação solicitada, sem afirmar ingestão externa. SAM prepara/executa as alterações, aguarda a conclusão e mostra eventos/outputs; sem comandos CloudFormation diretos, parsing de ARN ou divisão plan/apply.
 3. Reter template/checksum/log nativo SAM por sete dias, inclusive em falha. Não recompilar a função ou publicar outro ZIP neste workflow. Alterações vazias encerram com sucesso.
 
 A função publica versão/alias live com AutoPublishAliasAllProperties: true e AWS::LanguageExtensions antes de SAM. SSM function-version e invocation-arn apontam à versão numérica, não ao alias. ZipKey vem do template empacotado.

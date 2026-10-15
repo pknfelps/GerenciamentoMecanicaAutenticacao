@@ -65,7 +65,7 @@ FunctionTests cobre configuração, opções nativas, recursos, filtros, dimens�
 
 O Collector da API pertence ao EKS/infraestrutura; o da autenticação é uma extensão no próprio ambiente da Lambda. Seu YAML está em [Function/Observability/collector.yaml](../Function/Observability/collector.yaml), incluído no build/publish e no ZIP. Não há dependência de outro repositório para empacotá-lo.
 
-O parâmetro SAM `TelemetryEnabled` aceita somente `true` ou `false` e tem padrão `false`. A condição `EnableTelemetry` controla a layer e suas variáveis. Desabilitado, não há layer, endpoint/URI/GOMEMLIMIT adicionais nem providers da aplicação. O template fornece `Telemetry__Enabled=false`; o JSON também permanece desabilitado. Os workflows atuais não passam o novo parâmetro e permanecem inalterados. Não ativar manualmente uma stack antes da integração operacional: um padrão de parâmetro não é um mecanismo que force desativação em atualizações de uma stack já habilitada.
+O parâmetro SAM `TelemetryEnabled` aceita somente `true` ou `false` e tem padrão `false`. A condição `EnableTelemetry` controla a layer e suas variáveis. Desabilitado, não há layer, endpoint/URI/GOMEMLIMIT adicionais nem providers da aplicação. O template fornece `Telemetry__Enabled=false`; o JSON também permanece desabilitado. O auth-provision recebe telemetry_enabled=false por padrão e passa TelemetryEnabled explicitamente em toda execução, determinando a configuração da nova versão. Com true, consulta antes os metadados da layer do template e falha se não houver acesso; a permissão lambda:GetLayerVersion ainda precisa ser preparada no bootstrap antes da ativação. CI valida o YAML; auth-publish confere JSON/YAML no build. Templates sem TelemetryEnabled são rejeitados com orientação de republicar. A atualização do Gateway é necessária para consumir a nova versão numérica; versões antigas já publicadas não são modificadas por esse parâmetro.
 
 | Configuração quando habilitada | Valor |
 |---|---|
@@ -96,7 +96,7 @@ Essa execução usa o container Contrib correspondente, não o binário da exten
 
 ## Limites
 
-SAM e YAML do Collector preparados, com padrão desabilitado. Sem alteração de IAM, Gateway, workflows, SQL ou recursos AWS. Não habilitar exportação em hom/prd até conferir layer/permissões e comprovar extensão, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
+SAM, YAML e workflows do Collector preparados, com padrão desabilitado. Sem alteração de IAM, Gateway, SQL ou recursos AWS; nenhum workflow remoto executado. Não habilitar exportação em hom/prd até conferir layer/permissões e comprovar extensão, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
 
 
 ## Resultado local — 14/10/2026
@@ -106,3 +106,11 @@ SAM e YAML do Collector preparados, com padrão desabilitado. Sem alteração de
 ## Resultado local — 15/10/2026: Collector preparado no SAM
 
 278 testes aprovados, zero falhas/ignorados: Application 21, Contract 10, Function 105 e Infrastructure 142. Restore/build Release sem avisos/erros; sam validate/cfn-lint e build com TelemetryEnabled=false/true aprovados. Publish linux-x64 e layout ZIP conferidos, com certificado/JSON/YAML/runtimeconfig/deps e sem exporter de teste. YAML validado com Contrib 0.151.0; basic recebeu três sinais sem reproduzir o payload, com GOMEMLIMIT=96MiB. A fixture executou os dois perfis e comprovou primeira invocação, identidade/correlação/sanitização e continuidade sem Collector. Resultados aceitos em artifacts/e5-lambda-collector/accepted/*.trx; resumo em validation.json e IMPLEMENTACAO.md. Nenhuma operação AWS; as comprovações reais da extensão e a ativação continuam pendentes.
+
+## Integração dos workflows — 15/10/2026
+
+O job configuration de auth-ci valida o YAML pelo comando nativo do Collector 0.151.0. Os testes .NET continuam obrigatórios, com os dois cenários de Collector e Docker ativo. auth-publish inclui checks dos dois arquivos de observabilidade no build SAM, sem alterar o pacote compartilhado, a publicação imutável ou os checksums.
+
+auth-provision oferece telemetry_enabled=false por padrão, exige template novo com TelemetryEnabled e passa a opção explicitamente ao SAM. Somente habilitado consulta a layer referenciada pelo template; a projeção da resposta contém apenas ARN, arquiteturas e tamanho. O resumo não declara entrega ao destino. Não há novo job, aprovação ou chamada direta CloudFormation. auth-destroy permanece inalterado: sam delete exclui a função, não a layer pública.
+
+Esta integração é local. Após PR/main, executar publish de nova revisão → provision com false. Antes de true, preparar IAM/conferir layer e planejar a validação AWS. Atualizar o Gateway para consumir a nova versão numérica, quando necessário. APIs/SSM v2/OpenAPI e regras JWT permanecem iguais. E5.3/E5.13 continuam parciais.
