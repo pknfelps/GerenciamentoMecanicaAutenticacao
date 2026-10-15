@@ -1,0 +1,83 @@
+{
+  "Telemetry": {
+    "Enabled": false,
+    "FlushBudgetMilliseconds": 500,
+    "ResponseReserveMilliseconds": 500,
+    "Collection": {
+      "InvocationSpanName": "POST /customers/validate",
+      "DatabaseSpanName": "postgresql",
+      "InvocationErrorMessage": "Falha durante a autenticação.",
+      "DatabaseErrorMessage": "Falha na operação PostgreSQL.",
+      "ExportFailureMessage": "Falha ao exportar telemetria.",
+      "InvocationAttributes": [
+        "faas.name",
+        "faas.invocation_id",
+        "faas.coldstart",
+        "cloud.region",
+        "http.request.method",
+        "http.route",
+        "http.response.status_code",
+        "error.type"
+      ],
+      "DatabaseAttributes": [
+        "db.system.name",
+        "db.namespace",
+        "db.operation.name",
+        "db.response.status_code",
+        "error.type"
+      ],
+      "ExceptionAttributes": [
+        "exception.type",
+        "exception.message"
+      ],
+      "MetricAttributes": [
+        "outcome",
+        "http.response.status_code"
+      ],
+      "DurationBoundariesSeconds": [
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2,
+        5,
+        8,
+        10,
+        15
+      ]
+    }
+  },
+  "Logging": {
+    "OpenTelemetry": {
+      "IncludeFormattedMessage": true,
+      "ParseStateValues": true,
+      "LogLevel": {
+        "Default": "None",
+        "GerenciamentoMecanica.Autenticacao.Function": "Information"
+      }
+    }
+  },
+  "Metrics": {
+    "EnabledMetrics": {
+      "Mecanica.Auth": true
+    }
+  },
+  "OTEL_SERVICE_NAME": "mecanica-auth",
+  "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+  "OTEL_EXPORTER_OTLP_TIMEOUT": 100,
+  "OTEL_BSP_MAX_QUEUE_SIZE": 2048,
+  "OTEL_BSP_MAX_EXPORT_BATCH_SIZE": 512,
+  "OTEL_BSP_SCHEDULE_DELAY": 1000,
+  "OTEL_BSP_EXPORT_TIMEOUT": 100,
+  "OTEL_BLRP_MAX_QUEUE_SIZE": 2048,
+  "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE": 512,
+  "OTEL_BLRP_SCHEDULE_DELAY": 1000,
+  "OTEL_BLRP_EXPORT_TIMEOUT": 100,
+  "OTEL_METRIC_EXPORT_INTERVAL": 30000,
+  "OTEL_METRIC_EXPORT_TIMEOUT": 100,
+  "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "delta"
+}

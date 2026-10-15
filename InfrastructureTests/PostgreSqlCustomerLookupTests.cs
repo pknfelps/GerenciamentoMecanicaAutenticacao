@@ -1,3 +1,8 @@
+using OpenTelemetry.Logs;
+using Microsoft.Extensions.Configuration;
+using OpenTelemetry;
+using OpenTelemetry.Trace;
+using GerenciamentoMecanica.Autenticacao.Function.Observability;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using NSubstitute;
@@ -530,4 +535,163 @@ public class PostgreSqlCustomerLookupTests
         Assert.That(initializations, Is.EqualTo(1));
         await AssertNoOpenConnectionsAsync();
     }
+
+    private static Microsoft.Extensions.Configuration.IConfiguration TelemetryConfiguration(string endpoint)
+    {
+        return new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("Observability/observability.json")
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Telemetry:Enabled"] = "true", ["Runtime:Environment"] = "hom", ["AWS_REGION"] = "us-east-1",
+                ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
+            }).Build();
+    }
+
+    [Test]
+    public async Task InstrumentedRuntimeRetriesThenReusesInitializationAndLinksPostgreSqlWithoutPrivateData()
+    {
+        var spans = new List<Activity>();
+        var logs = new List<OpenTelemetry.Logs.LogRecord>();
+        var initializations = 0;
+        using var telemetry = LambdaObservability.Create(TelemetryConfiguration("http://127.0.0.1:1"),
+            trace => trace.AddInMemoryExporter(spans), configureLogs: log => log.AddInMemoryExporter(logs));
+        await using var handler = new FunctionHandler(new FunctionRuntimeProvider(_ =>
+        {
+            initializations++;
+            if (initializations == 1)
+                throw new InvalidOperationException("sensitive-initialization-failure");
+            return Task.FromResult(HttpRuntime());
+        }), telemetry);
+        var context = HttpContext();
+        context.FunctionName.Returns("mecanica-hom-auth");
+        Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(500));
+        for (var invocation = 0; invocation < 2; invocation++)
+        {
+            var response = await handler.HandleAsync(HttpRequest("52998224725"), context);
+            Assert.That(response.StatusCode, Is.EqualTo(200));
+            await AssertNoOpenConnectionsAsync();
+        }
+        Assert.That(initializations, Is.EqualTo(2));
+        var parents = spans.Where(span => span.Kind == ActivityKind.Server).ToArray();
+        var children = spans.Where(span => span.Source.Name == "Npgsql" && parents.Any(parent => parent.TraceId == span.TraceId)).ToArray();
+        Assert.That(parents.Length, Is.EqualTo(3));
+        Assert.That(children.Length, Is.GreaterThanOrEqualTo(2));
+        Assert.That(parents.Select(span => span.TraceId).Distinct().Count(), Is.EqualTo(3));
+        foreach (var child in children)
+        {
+            Assert.That(parents.Any(parent => child.ParentSpanId == parent.SpanId && child.TraceId == parent.TraceId), Is.True);
+            Assert.That(child.DisplayName, Is.EqualTo("postgresql"));
+            Assert.That(child.TagObjects.Any(tag => tag.Key.Contains("query") || tag.Key.Contains("statement")
+                || tag.Key.Contains("connection") || tag.Value?.ToString()?.Contains(Cpf) == true), Is.False);
+        }
+        Assert.That(logs.Count, Is.EqualTo(3));
+        Assert.That(logs.All(log => parents.Any(parent => parent.TraceId == log.TraceId)), Is.True);
+    }
+
+    [Test]
+    public async Task RealPostgreSqlExceptionRemovesMessageSqlAndStackTrace()
+    {
+        const string sensitive = "sensitive-database-exception-auth";
+        var spans = new List<Activity>();
+        using var telemetry = LambdaObservability.Create(TelemetryConfiguration("http://127.0.0.1:1"),
+            trace => trace.AddInMemoryExporter(spans));
+        await using var handler = new FunctionHandler(async (_, token) =>
+        {
+            await using var connection = await authentication.OpenConnectionAsync(token);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "DO $$ BEGIN RAISE EXCEPTION 'sensitive-database-exception-auth'; END $$;",
+                cancellationToken: token));
+            return CustomerAuthenticationResult.NotEligible();
+        }, telemetry);
+        var context = HttpContext();
+        context.FunctionName.Returns("mecanica-hom-auth");
+        Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(500));
+        var database = spans.Single(span => span.Source.Name == "Npgsql" && span.Status == ActivityStatusCode.Error);
+        Assert.That(database.StatusDescription, Is.EqualTo("Falha na operação PostgreSQL."));
+        Assert.That(database.Events.Single().Tags.Single(tag => tag.Key == "exception.type").Value,
+            Is.EqualTo(typeof(PostgresException).FullName));
+        foreach (var span in spans)
+        {
+            Assert.That(span.Events.SelectMany(item => item.Tags).Any(tag => tag.Key.Contains("stacktrace")), Is.False);
+            Assert.That(span.Events.SelectMany(item => item.Tags).Any(tag => tag.Value?.ToString()?.Contains(sensitive) == true), Is.False);
+            Assert.That(span.TagObjects.Any(tag => tag.Value?.ToString()?.Contains(sensitive) == true), Is.False);
+        }
+        await AssertNoOpenConnectionsAsync();
+    }
+
+    [Test]
+    public async Task FirstIsolatedInvocationExportsToCollectorAndStoppedCollectorDoesNotBreakAuthentication()
+    {
+        var directory = new DirectoryInfo(TestContext.CurrentContext.TestDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "observability", "collector.yaml")))
+            directory = directory.Parent;
+        Assert.That(directory, Is.Not.Null);
+        await using var collector = new DotNet.Testcontainers.Builders.ContainerBuilder("otel/opentelemetry-collector-contrib:0.161.0")
+            .WithResourceMapping(new FileInfo(Path.Combine(directory!.FullName, "observability", "collector.yaml")), "/etc/otelcol-contrib")
+            .WithCommand("--config=/etc/otelcol-contrib/collector.yaml")
+            .WithPortBinding(4318, true)
+            .WithWaitStrategy(DotNet.Testcontainers.Builders.Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request =>
+                request.ForPort(4318).ForPath("/").ForStatusCode(System.Net.HttpStatusCode.NotFound)))
+            .Build();
+        await collector.StartAsync();
+        var spans = new List<Activity>();
+        using var telemetry = LambdaObservability.Create(TelemetryConfiguration(
+            $"http://{collector.Hostname}:{collector.GetMappedPublicPort(4318)}"),
+            trace => trace.AddInMemoryExporter(spans));
+        await using var handler = new FunctionHandler(new FunctionRuntimeProvider(_ => Task.FromResult(HttpRuntime())), telemetry);
+        var context = HttpContext();
+        context.FunctionName.Returns("mecanica-hom-auth");
+        Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));
+        var traceId = spans.Single(span => span.Kind == ActivityKind.Server).TraceId.ToString();
+        var output = "";
+        var received = false;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var captured = await collector.GetLogsAsync();
+            output = captured.Stdout + captured.Stderr;
+            received = output.Contains("ResourceSpans", StringComparison.Ordinal)
+                && output.Contains("ResourceMetrics", StringComparison.Ordinal)
+                && output.Contains("ResourceLog", StringComparison.Ordinal)
+                && output.Contains("mecanica.auth.invocations", StringComparison.Ordinal)
+                && output.Contains("mecanica.auth.invocation.duration", StringComparison.Ordinal)
+                && output.Contains(traceId, StringComparison.Ordinal);
+            if (received) break;
+            await Task.Delay(200);
+        }
+        Assert.That(received, Is.True, "A primeira chamada deve entregar os três sinais sem outra invocação.");
+        Assert.That(output, Does.Contain("mecanica-auth").And.Contain("postgresql"));
+        Assert.That(output, Does.Not.Contain(Cpf).And.Not.Contain("test-only-auth-password")
+            .And.Not.Contain("SELECT id").And.Not.Contain("Cliente CPF").And.Not.Contain("exception.stacktrace"));
+        await collector.StopAsync();
+        var elapsed = Stopwatch.StartNew();
+        Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));
+        Assert.That(elapsed.Elapsed, Is.LessThan(TimeSpan.FromSeconds(2)));
+        await AssertNoOpenConnectionsAsync();
+    }
+
+    [Test]
+    public async Task InstrumentedCancellationClosesConnectionAndPreservesSafeTimeoutResponse()
+    {
+        await using var blocker = await admin.OpenConnectionAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await blocker.ExecuteAsync("LOCK TABLE public.customers IN ACCESS EXCLUSIVE MODE", transaction: transaction);
+        var spans = new List<Activity>();
+        using var telemetry = LambdaObservability.Create(TelemetryConfiguration("http://127.0.0.1:1"),
+            trace => trace.AddInMemoryExporter(spans));
+        await using var handler = new FunctionHandler(async (_, token) =>
+        {
+            await lookup.FindByDocumentAsync(Cpf, token);
+            return CustomerAuthenticationResult.NotEligible();
+        }, telemetry);
+        var context = HttpContext(1.15);
+        context.FunctionName.Returns("mecanica-hom-auth");
+        Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(500));
+        Assert.That(spans.Single(span => span.Kind == ActivityKind.Server).Status, Is.EqualTo(ActivityStatusCode.Error));
+        Assert.That(spans.Where(span => span.Source.Name == "Npgsql"), Is.Not.Empty);
+        Assert.That(spans.SelectMany(span => span.Events).SelectMany(item => item.Tags)
+            .Any(tag => tag.Key.Contains("stacktrace") || tag.Value?.ToString()?.Contains(Cpf) == true), Is.False);
+        await AssertNoOpenConnectionsAsync();
+    }
+
 }
