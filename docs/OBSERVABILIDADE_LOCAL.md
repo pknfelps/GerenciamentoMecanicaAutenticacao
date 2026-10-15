@@ -96,7 +96,7 @@ Essa execução usa o container Contrib correspondente, não o binário da exten
 
 ## Limites
 
-SAM, YAML e workflows do Collector preparados, com padrão desabilitado. Sem alteração de IAM, Gateway, SQL ou recursos AWS; nenhum workflow remoto executado. Não habilitar exportação em hom/prd até conferir layer/permissões e comprovar extensão, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
+SAM, YAML e workflows do Collector preparados, com padrão desabilitado. Preparação declarativa X-Ray no SAM/Gateway e permissões no bootstrap, sem aplicação IAM ou alteração de recursos AWS; SQL preservado e nenhum workflow remoto executado. Não habilitar exportação em hom/prd até conferir layer/permissões e comprovar extensão, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
 
 
 ## Resultado local — 14/10/2026
@@ -114,3 +114,11 @@ O job configuration de auth-ci valida o YAML pelo comando nativo do Collector 0.
 auth-provision oferece telemetry_enabled=false por padrão, exige template novo com TelemetryEnabled e passa a opção explicitamente ao SAM. Somente habilitado consulta a layer referenciada pelo template; a projeção da resposta contém apenas ARN, arquiteturas e tamanho. O resumo não declara entrega ao destino. Não há novo job, aprovação ou chamada direta CloudFormation. auth-destroy permanece inalterado: sam delete exclui a função, não a layer pública.
 
 Esta integração é local. Após PR/main, executar publish de nova revisão → provision com false. Antes de true, preparar IAM/conferir layer e planejar a validação AWS. Atualizar o Gateway para consumir a nova versão numérica, quando necessário. APIs/SSM v2/OpenAPI e regras JWT permanecem iguais. E5.3/E5.13 continuam parciais.
+
+## X-Ray nativo — configuração independente preparada em 15/10/2026
+
+`XRayEnabled=false` é o padrão do SAM e configura PassThrough, preservando propagação sem envio automático dos segmentos da função. true configura Active. O controle não altera TelemetryEnabled, W3C, desativação da extração automática X-Ray no SDK, Collector, exportação OTLP ou código de autenticação. É possível selecionar qualquer combinação; veja a tabela no [procedimento de deploy](DEPLOY.md#x-ray-nativo--preparação-local-de-15102026).
+
+O auth-provision recebe xray_enabled=false e envia as duas opções explicitamente, exigindo template novo. A permissão de escrita nativa é preparada no bootstrap persistente, com somente PutTraceSegments/PutTelemetryRecords em us-east-1; leitura da layer exata é preparada somente para as pipelines auth. A aplicação IAM depende de plano AWS salvo aprovado posteriormente. Nada foi ativado na AWS nesta entrega.
+
+Os segmentos nativos não percorrem a sanitização OpenTelemetry da aplicação. Antes da ativação para uso normal, inspecionar com chamadas controladas e dados fictícios. Validação local de Terraform, policies, SAM nas quatro combinações e workflow não comprova conteúdo dos segmentos, amostragem, congelamento, tempo/memória, correlação W3C/X-Ray ou ausência de duplicação real. E5.3/E5.14 permanecem abertas; ingestão New Relic/coleta CloudWatch também pendentes.

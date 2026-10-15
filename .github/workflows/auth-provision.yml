@@ -14,6 +14,11 @@ on:
         required: true
         default: false
         type: boolean
+      xray_enabled:
+        description: 'Habilitar tracing nativo X-Ray; independente da telemetria OpenTelemetry'
+        required: true
+        default: false
+        type: boolean
       artifact_commit:
         description: 'SHA completo do codigo e template SAM publicados'
         required: true
@@ -29,6 +34,7 @@ env:
   TARGET_ENVIRONMENT: ${{ inputs.environment }}
   ARTIFACT_COMMIT: ${{ inputs.artifact_commit }}
   TELEMETRY_ENABLED: ${{ inputs.telemetry_enabled && 'true' || 'false' }}
+  XRAY_ENABLED: ${{ inputs.xray_enabled && 'true' || 'false' }}
   STACK_NAME: mecanica-${{ inputs.environment }}-auth
   AWS_REGION: us-east-1
   AWS_PAGER: ''
@@ -75,8 +81,8 @@ jobs:
           hash="$(cat "$template.sha256")"
           [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  %s\n' "$hash" "$template" | sha256sum --check --strict
-          jq -e '.Parameters.TelemetryEnabled.Type == "String"' "$template" > /dev/null || {
-            echo '::error::Publique uma nova revisao SAM com o parametro TelemetryEnabled antes de provisionar.'
+          jq -e '.Parameters.TelemetryEnabled.Type == "String" and .Parameters.XRayEnabled.Type == "String"' "$template" > /dev/null || {
+            echo '::error::Publique uma nova revisao SAM com os parametros TelemetryEnabled e XRayEnabled antes de provisionar.'
             exit 1
           }
           code_uri="$(jq -er '.Resources.AuthFunction.Properties.CodeUri | select(type == "string")' "$template")"
@@ -138,12 +144,13 @@ jobs:
             --parameter-overrides "Environment=$TARGET_ENVIRONMENT" "ArtifactCommit=$ARTIFACT_COMMIT" \
               "WorkloadSubnetIds=$WORKLOAD_SUBNET_IDS" "AuthSecurityGroupId=$AUTH_SECURITY_GROUP_ID" \
               "DatabaseSecurityGroupId=$DATABASE_SECURITY_GROUP_ID" "ZipKey=$ZIP_KEY" \
-              "TelemetryEnabled=$TELEMETRY_ENABLED" \
+              "TelemetryEnabled=$TELEMETRY_ENABLED" "XRayEnabled=$XRAY_ENABLED" \
             --no-confirm-changeset --no-fail-on-empty-changeset --no-progressbar \
             | tee artifacts/deploy/sam-deploy.txt
           {
             echo "SAM concluido: $STACK_NAME; ambiente: $TARGET_ENVIRONMENT; codigo/template: $ARTIFACT_COMMIT; workflow: $GITHUB_SHA."
             echo "Telemetria solicitada: $TELEMETRY_ENABLED. Ingestao externa nao validada por este workflow."
+            echo "X-Ray nativo solicitado: $XRAY_ENABLED. Segmentos nativos nao conferidos por este workflow."
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
