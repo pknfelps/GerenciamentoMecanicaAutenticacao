@@ -8,6 +8,11 @@ Parameters:
   Environment:
     Type: String
     AllowedValues: [hom, prd]
+  TelemetryEnabled:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Ativacao explicita do Collector local; permanece desabilitada nos workflows atuais.
   ArtifactCommit:
     Type: String
     AllowedPattern: '^[0-9a-f]{40}$'
@@ -25,6 +30,9 @@ Parameters:
     Type: String
     AllowedPattern: '^sam/auth/(hom|prd)/.+$'
     Description: Chave S3 produzida pelo sam package e publicada com este template.
+
+Conditions:
+  EnableTelemetry: !Equals [!Ref TelemetryEnabled, 'true']
 
 Resources:
   AuthLogs:
@@ -63,6 +71,10 @@ Resources:
       PackageType: Zip
       Runtime: dotnet10
       Architectures: [x86_64]
+      Layers: !If
+        - EnableTelemetry
+        - ['arn:aws:lambda:us-east-1:184161586896:layer:opentelemetry-collector-amd64-0_22_0:1']
+        - !Ref AWS::NoValue
       Handler: GerenciamentoMecanica.Autenticacao.Function::GerenciamentoMecanica.Autenticacao.Function.FunctionHandler::HandleAsync
       Role: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mecanica-${Environment}-auth-runtime'
       VpcConfig:
@@ -75,6 +87,10 @@ Resources:
       Environment:
         Variables:
           Runtime__Environment: !Ref Environment
+          Telemetry__Enabled: !Ref TelemetryEnabled
+          OTEL_EXPORTER_OTLP_ENDPOINT: !If [EnableTelemetry, 'http://127.0.0.1:4318', !Ref AWS::NoValue]
+          OPENTELEMETRY_COLLECTOR_CONFIG_URI: !If [EnableTelemetry, '/var/task/Observability/collector.yaml', !Ref AWS::NoValue]
+          GOMEMLIMIT: !If [EnableTelemetry, '96MiB', !Ref AWS::NoValue]
       LoggingConfig:
         LogFormat: JSON
         LogGroup: !Ref AuthLogs

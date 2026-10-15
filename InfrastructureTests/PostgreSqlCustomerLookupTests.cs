@@ -620,16 +620,38 @@ public class PostgreSqlCustomerLookupTests
         await AssertNoOpenConnectionsAsync();
     }
 
-    [Test]
-    public async Task FirstIsolatedInvocationExportsToCollectorAndStoppedCollectorDoesNotBreakAuthentication()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task FirstIsolatedInvocationExportsToCollectorAndStoppedCollectorDoesNotBreakAuthentication(bool packagedConfiguration)
     {
-        var directory = new DirectoryInfo(TestContext.CurrentContext.TestDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "observability", "collector.yaml")))
-            directory = directory.Parent;
-        Assert.That(directory, Is.Not.Null);
-        await using var collector = new DotNet.Testcontainers.Builders.ContainerBuilder("otel/opentelemetry-collector-contrib:0.161.0")
-            .WithResourceMapping(new FileInfo(Path.Combine(directory!.FullName, "observability", "collector.yaml")), "/etc/otelcol-contrib")
-            .WithCommand("--config=/etc/otelcol-contrib/collector.yaml")
+        FileInfo configuration;
+        if (packagedConfiguration)
+        {
+            configuration = new FileInfo(Path.Combine(AppContext.BaseDirectory, "Observability", "collector.yaml"));
+        }
+        else
+        {
+            var directory = new DirectoryInfo(TestContext.CurrentContext.TestDirectory);
+            while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "compose.observability.yaml")))
+                directory = directory.Parent;
+            Assert.That(directory, Is.Not.Null);
+            configuration = new FileInfo(Path.Combine(directory!.FullName, "observability", "collector.yaml"));
+        }
+        Assert.That(configuration.Exists, Is.True);
+        await TestContext.Out.WriteLineAsync(packagedConfiguration
+            ? "Collector configuration: packaged Lambda YAML; Collector 0.151.0."
+            : "Collector configuration: local Compose YAML; Collector 0.161.0.");
+        var command = new List<string> { "--config=/etc/otelcol-contrib/collector.yaml" };
+        if (packagedConfiguration)
+        {
+            command.Add("--config=yaml:receivers::otlp::protocols::http::endpoint: 0.0.0.0:4318");
+            command.Add("--config=yaml:exporters::debug::verbosity: detailed");
+        }
+        await using var collector = new DotNet.Testcontainers.Builders.ContainerBuilder(packagedConfiguration
+                ? "otel/opentelemetry-collector-contrib:0.151.0"
+                : "otel/opentelemetry-collector-contrib:0.161.0")
+            .WithResourceMapping(configuration, "/etc/otelcol-contrib")
+            .WithCommand(command.ToArray())
             .WithPortBinding(4318, true)
             .WithWaitStrategy(DotNet.Testcontainers.Builders.Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request =>
                 request.ForPort(4318).ForPath("/").ForStatusCode(System.Net.HttpStatusCode.NotFound)))
@@ -642,7 +664,8 @@ public class PostgreSqlCustomerLookupTests
         await using var handler = new FunctionHandler(new FunctionRuntimeProvider(_ => Task.FromResult(HttpRuntime())), telemetry);
         var context = HttpContext();
         context.FunctionName.Returns("mecanica-hom-auth");
-        Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));
+        var response = await handler.HandleAsync(HttpRequest(Cpf), context);
+        Assert.That(response.StatusCode, Is.EqualTo(200));
         var traceId = spans.Single(span => span.Kind == ActivityKind.Server).TraceId.ToString();
         var output = "";
         var received = false;
@@ -660,9 +683,11 @@ public class PostgreSqlCustomerLookupTests
             await Task.Delay(200);
         }
         Assert.That(received, Is.True, "A primeira chamada deve entregar os três sinais sem outra invocação.");
-        Assert.That(output, Does.Contain("mecanica-auth").And.Contain("postgresql"));
+        Assert.That(output, Does.Contain("mecanica-auth").And.Contain("postgresql")
+            .And.Contain("service.version").And.Contain("deployment.environment.name"));
         Assert.That(output, Does.Not.Contain(Cpf).And.Not.Contain("test-only-auth-password")
-            .And.Not.Contain("SELECT id").And.Not.Contain("Cliente CPF").And.Not.Contain("exception.stacktrace"));
+            .And.Not.Contain("SELECT id").And.Not.Contain("Cliente CPF").And.Not.Contain("exception.stacktrace")
+            .And.Not.Contain(System.Text.Json.JsonSerializer.Deserialize<string>(response.Body)!));
         await collector.StopAsync();
         var elapsed = Stopwatch.StartNew();
         Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));

@@ -61,11 +61,48 @@ O teste `FirstIsolatedInvocationExportsToCollectorAndStoppedCollectorDoesNotBrea
 
 FunctionTests cobre configuração, opções nativas, recursos, filtros, dimensões, contexto, correlação, orçamento compartilhado, endpoint lento e descarte. InfrastructureTests amplia a fixture PostgreSQL existente para spans relacionados, erro real sanitizado, cancelamento, fechamento de conexão e inicialização reutilizada. Todos os testes anteriores permanecem; indisponibilidade do Docker falha os testes de integração, sem ignorá-los.
 
+## Collector preparado no SAM
+
+O Collector da API pertence ao EKS/infraestrutura; o da autenticação é uma extensão no próprio ambiente da Lambda. Seu YAML está em [Function/Observability/collector.yaml](../Function/Observability/collector.yaml), incluído no build/publish e no ZIP. Não há dependência de outro repositório para empacotá-lo.
+
+O parâmetro SAM `TelemetryEnabled` aceita somente `true` ou `false` e tem padrão `false`. A condição `EnableTelemetry` controla a layer e suas variáveis. Desabilitado, não há layer, endpoint/URI/GOMEMLIMIT adicionais nem providers da aplicação. O template fornece `Telemetry__Enabled=false`; o JSON também permanece desabilitado. Os workflows atuais não passam o novo parâmetro e permanecem inalterados. Não ativar manualmente uma stack antes da integração operacional: um padrão de parâmetro não é um mecanismo que force desativação em atualizações de uma stack já habilitada.
+
+| Configuração quando habilitada | Valor |
+|---|---|
+| Layer Collector-only | `arn:aws:lambda:us-east-1:184161586896:layer:opentelemetry-collector-amd64-0_22_0:1` |
+| Release da layer / Collector | `0.22.0` / `0.151.0` |
+| `Telemetry__Enabled` | `true` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://127.0.0.1:4318` |
+| `OPENTELEMETRY_COLLECTOR_CONFIG_URI` | `/var/task/Observability/collector.yaml` |
+| `GOMEMLIMIT` | `96MiB` |
+
+A layer é somente o Collector, sem outra instrumentação .NET. ARN e arquitetura amd64 são fixos para us-east-1/x86_64. [Release oficial](https://github.com/open-telemetry/opentelemetry-lambda/releases/tag/layer-collector%2F0.22.0) e [configuração da extensão](https://github.com/open-telemetry/opentelemetry-lambda/blob/layer-collector/0.22.0/collector/README.md). A existência/acessibilidade desse ARN na AWS e as permissões para utilizá-lo ainda precisam ser conferidas antes de ativar.
+
+O YAML recebe somente OTLP HTTP/protobuf em loopback, com memory_limiter de 64 MiB, margem de 16 MiB e verificação a cada segundo. O limite Go de 96 MiB é uma meta de memória do processo Collector, não uma reserva nem limite isolado da extensão; ela compartilha os 512 MB da função. Os três pipelines usam debug basic, sem batch, filas persistentes, credenciais, destino externo ou mudança de identidade. Não há receiver para stdout/logs da plataforma nem exporter X-Ray. A extensão pode usar eventos nativos de ciclo de vida internamente; eles não integram os pipelines de coleta definidos aqui.
+
+O debug basic emite resumos de lotes e não exibe os registros completos. Sem batch adicional, os lotes recebidos do SDK seguem diretamente ao exporter diagnóstico. O flush existente continua limitado a 500 ms compartilhados, com reserva de resposta e timeout OTLP de 100 ms. A futura exportação para New Relic exigirá nova revisão do ciclo de vida/filas da extensão; a validação atual não comprova congelamento, entrega durável ou consumo real de recursos.
+
+### Conferência local do YAML empacotado
+
+```powershell
+docker run --rm --volume "${PWD}/Function/Observability/collector.yaml:/etc/otelcol-contrib/collector.yaml:ro" otel/opentelemetry-collector-contrib:0.151.0 validate --config=/etc/otelcol-contrib/collector.yaml
+
+dotnet test InfrastructureTests/InfrastructureTests.csproj -c Release --filter Name~FirstIsolatedInvocation
+```
+
+A fixture executa dois casos: configuração original do Compose com Contrib 0.161.0 e configuração copiada ao output com Contrib 0.151.0. No segundo, overrides nativos de `--config=yaml:...` alteram somente o bind para `0.0.0.0:4318` (acesso do teste ao container) e debug para detailed (inspeção). O arquivo empacotado permanece loopback/basic. O teste confere os três sinais da primeira chamada isolada, identidade/correlação, ausência de dados sensíveis e autenticação após parar o Collector. Bootstrap injetado e PostgreSQL descartável evitam acesso AWS/RDS reais.
+
+Essa execução usa o container Contrib correspondente, não o binário da extensão ou o ambiente real da Lambda. A validação do SAM é local; não baixar layers pela API AWS nem executar `sam local invoke` que consulte a conta nesta entrega. Deploy/ativação, permissões, congelamento e memória/tempo reais continuam pendentes.
+
 ## Limites
 
-Sem alteração de SAM, layers, IAM, Gateway, workflows, SQL ou recursos AWS. Não habilitar exportação em hom/prd até preparar e comprovar o Collector local da Lambda, compatibilidade da layer, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
+SAM e YAML do Collector preparados, com padrão desabilitado. Sem alteração de IAM, Gateway, workflows, SQL ou recursos AWS. Não habilitar exportação em hom/prd até conferir layer/permissões e comprovar extensão, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
 
 
 ## Resultado local — 14/10/2026
 
 277 testes aprovados, zero falhas e zero ignorados (21 Application, 10 Contract, 105 Function, 141 Infrastructure). Restore/build Release, PostgreSQL/Collector reais, publish linux-x64, sam validate --lint, sam build e renderização do Compose aprovados. Certificado, observability.json, dependências e runtimeconfig.json conferidos no publish e no diretório de build do SAM; exporter InMemory ausente. Evidências finais em artifacts/e5-lambda/validation.json, IMPLEMENTACAO.md e accepted/*.trx. Nenhuma operação AWS nesta validação.
+
+## Resultado local — 15/10/2026: Collector preparado no SAM
+
+278 testes aprovados, zero falhas/ignorados: Application 21, Contract 10, Function 105 e Infrastructure 142. Restore/build Release sem avisos/erros; sam validate/cfn-lint e build com TelemetryEnabled=false/true aprovados. Publish linux-x64 e layout ZIP conferidos, com certificado/JSON/YAML/runtimeconfig/deps e sem exporter de teste. YAML validado com Contrib 0.151.0; basic recebeu três sinais sem reproduzir o payload, com GOMEMLIMIT=96MiB. A fixture executou os dois perfis e comprovou primeira invocação, identidade/correlação/sanitização e continuidade sem Collector. Resultados aceitos em artifacts/e5-lambda-collector/accepted/*.trx; resumo em validation.json e IMPLEMENTACAO.md. Nenhuma operação AWS; as comprovações reais da extensão e a ativação continuam pendentes.
