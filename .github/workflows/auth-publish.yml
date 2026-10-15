@@ -83,6 +83,8 @@ jobs:
           test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.deps.json
           test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.runtimeconfig.json
           test -s .aws-sam/build/AuthFunction/Certificates/rds-ca.pem
+          test -s .aws-sam/build/AuthFunction/Observability/observability.json
+          test -s .aws-sam/build/AuthFunction/Observability/collector.yaml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: bundle
         with:

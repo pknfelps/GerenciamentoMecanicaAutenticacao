@@ -84,6 +84,12 @@ jobs:
           version: '1.167.0'
       - name: Validate SAM template
         run: sam validate --lint --template-file template.yaml --region "$AWS_REGION"
+      - name: Validate Lambda Collector configuration
+        run: >-
+          docker run --rm
+          --volume "$GITHUB_WORKSPACE/Function/Observability/collector.yaml:/etc/otelcol-contrib/collector.yaml:ro"
+          otel/opentelemetry-collector-contrib:0.151.0
+          validate --config=/etc/otelcol-contrib/collector.yaml
       - name: Validate workflows
         env:
           ACTIONLINT_VERSION: 1.7.12
