@@ -8,20 +8,33 @@ processors:
     check_interval: 1s
     limit_mib: 64
     spike_limit_mib: 16
+  decouple:
+    max_queue_size: 20
 exporters:
-  debug:
-    verbosity: basic
+  otlphttp/newrelic:
+    endpoint: https://otlp.nr-data.net
+    headers:
+      api-key: ${secretsmanager:${env:NEW_RELIC_LICENSE_KEY_SECRET}}
+    compression: gzip
+    timeout: 1s
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: true
+      initial_interval: 200ms
+      max_interval: 500ms
+      max_elapsed_time: 2s
 service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter]
-      exporters: [debug]
+      processors: [memory_limiter, decouple]
+      exporters: [otlphttp/newrelic]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter]
-      exporters: [debug]
+      processors: [memory_limiter, decouple]
+      exporters: [otlphttp/newrelic]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter]
-      exporters: [debug]
+      processors: [memory_limiter, decouple]
+      exporters: [otlphttp/newrelic]

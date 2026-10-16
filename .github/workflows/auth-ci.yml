@@ -84,12 +84,18 @@ jobs:
           version: '1.167.0'
       - name: Validate SAM template
         run: sam validate --lint --template-file template.yaml --region "$AWS_REGION"
-      - name: Validate Lambda Collector configuration
+      # decouple pertence a extensao Lambda; Contrib valida o transporte, sem executar seu ciclo de vida.
+      - name: Validate New Relic transport without AWS credentials
         run: >-
           docker run --rm
-          --volume "$GITHUB_WORKSPACE/Function/Observability/collector.yaml:/etc/otelcol-contrib/collector.yaml:ro"
+          --volume "$GITHUB_WORKSPACE/Function/Observability/collector.yaml:/etc/collector.yaml:ro"
           otel/opentelemetry-collector-contrib:0.151.0
-          validate --config=/etc/otelcol-contrib/collector.yaml
+          validate --config=/etc/collector.yaml
+          '--config=yaml:exporters::otlphttp/newrelic::headers::api-key: local-test-license'
+          '--config=yaml:processors: null'
+          '--config=yaml:service::pipelines::traces::processors: []'
+          '--config=yaml:service::pipelines::metrics::processors: []'
+          '--config=yaml:service::pipelines::logs::processors: []'
       - name: Validate workflows
         env:
           ACTIONLINT_VERSION: 1.7.12

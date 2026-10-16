@@ -641,11 +641,17 @@ public class PostgreSqlCustomerLookupTests
         await TestContext.Out.WriteLineAsync(packagedConfiguration
             ? "Collector configuration: packaged Lambda YAML; Collector 0.151.0."
             : "Collector configuration: local Compose YAML; Collector 0.161.0.");
-        var command = new List<string> { "--config=/etc/otelcol-contrib/collector.yaml" };
+        await using var destination = packagedConfiguration ? await OtlpTestEndpoint.StartAsync() : null;
+        var command = new List<string> { $"--config=/etc/otelcol-contrib/{configuration.Name}" };
         if (packagedConfiguration)
         {
             command.Add("--config=yaml:receivers::otlp::protocols::http::endpoint: 0.0.0.0:4318");
-            command.Add("--config=yaml:exporters::debug::verbosity: detailed");
+            command.Add($"--config=yaml:exporters::otlphttp/newrelic::endpoint: {destination!.CollectorEndpoint}");
+            command.Add($"--config=yaml:exporters::otlphttp/newrelic::headers::api-key: {OtlpTestEndpoint.License}");
+            // Contrib nao inclui decouple: valida transporte; ciclo da extensao sera comprovado na AWS.
+            command.Add("--config=yaml:processors: null");
+            foreach (var signal in new[] { "traces", "metrics", "logs" })
+                command.Add($"--config=yaml:service::pipelines::{signal}::processors: []");
         }
         await using var collector = new DotNet.Testcontainers.Builders.ContainerBuilder(packagedConfiguration
                 ? "otel/opentelemetry-collector-contrib:0.151.0"
@@ -673,6 +679,15 @@ public class PostgreSqlCustomerLookupTests
         {
             var captured = await collector.GetLogsAsync();
             output = captured.Stdout + captured.Stderr;
+            if (packagedConfiguration)
+            {
+                output = destination!.PayloadText;
+                received = destination.HasAllSignals && output.Contains("mecanica.auth.invocations", StringComparison.Ordinal)
+                    && output.Contains("mecanica.auth.invocation.duration", StringComparison.Ordinal);
+                if (received) break;
+                await Task.Delay(200);
+                continue;
+            }
             received = output.Contains("ResourceSpans", StringComparison.Ordinal)
                 && output.Contains("ResourceMetrics", StringComparison.Ordinal)
                 && output.Contains("ResourceLog", StringComparison.Ordinal)
@@ -688,6 +703,32 @@ public class PostgreSqlCustomerLookupTests
         Assert.That(output, Does.Not.Contain(Cpf).And.Not.Contain("test-only-auth-password")
             .And.Not.Contain("SELECT id").And.Not.Contain("Cliente CPF").And.Not.Contain("exception.stacktrace")
             .And.Not.Contain(System.Text.Json.JsonSerializer.Deserialize<string>(response.Body)!));
+        if (packagedConfiguration)
+        {
+            Assert.That(destination!.Requests.All(item => item.ApiKey == OtlpTestEndpoint.License), Is.True);
+            Assert.That(output, Does.Not.Contain(OtlpTestEndpoint.License));
+            var traceBytes = Convert.FromHexString(traceId);
+            Assert.That(destination.Requests.Any(item => item.Path == "/v1/traces" && item.Body.AsSpan().IndexOf(traceBytes) >= 0), Is.True);
+            Assert.That(destination.Requests.Any(item => item.Path == "/v1/logs" && item.Body.AsSpan().IndexOf(traceBytes) >= 0), Is.True);
+            Assert.That(destination.Requests.All(item => item.Body.Length < 1_000_000), Is.True);
+            foreach (var status in new[] { 401, 429, 503 })
+            {
+                destination.StatusCode = status;
+                Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));
+                for (var attempt = 0; attempt < 40 && !destination.Requests.Any(item => item.Status == status); attempt++)
+                    await Task.Delay(100);
+                Assert.That(destination.Requests.Any(item => item.Status == status), Is.True);
+                destination.StatusCode = 200;
+            }
+            destination.Delay = TimeSpan.FromSeconds(2);
+            Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));
+            await Task.Delay(2200);
+            destination.Delay = TimeSpan.Zero;
+            await destination.StopAsync();
+            Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));
+            var captured = await collector.GetLogsAsync();
+            Assert.That(captured.Stdout + captured.Stderr, Does.Not.Contain(OtlpTestEndpoint.License));
+        }
         await collector.StopAsync();
         var elapsed = Stopwatch.StartNew();
         Assert.That((await handler.HandleAsync(HttpRequest(Cpf), context)).StatusCode, Is.EqualTo(200));

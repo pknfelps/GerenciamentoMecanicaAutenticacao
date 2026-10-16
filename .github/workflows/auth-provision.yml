@@ -9,11 +9,6 @@ on:
         default: hom
         type: choice
         options: [hom, prd]
-      telemetry_enabled:
-        description: 'Habilitar telemetria diagnostica; exige acesso a layer do Collector'
-        required: true
-        default: false
-        type: boolean
       xray_enabled:
         description: 'Habilitar tracing nativo X-Ray; independente da telemetria OpenTelemetry'
         required: true
@@ -33,7 +28,6 @@ concurrency:
 env:
   TARGET_ENVIRONMENT: ${{ inputs.environment }}
   ARTIFACT_COMMIT: ${{ inputs.artifact_commit }}
-  TELEMETRY_ENABLED: ${{ inputs.telemetry_enabled && 'true' || 'false' }}
   XRAY_ENABLED: ${{ inputs.xray_enabled && 'true' || 'false' }}
   STACK_NAME: mecanica-${{ inputs.environment }}-auth
   AWS_REGION: us-east-1
@@ -81,8 +75,8 @@ jobs:
           hash="$(cat "$template.sha256")"
           [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  %s\n' "$hash" "$template" | sha256sum --check --strict
-          jq -e '.Parameters.TelemetryEnabled.Type == "String" and .Parameters.XRayEnabled.Type == "String"' "$template" > /dev/null || {
-            echo '::error::Publique uma nova revisao SAM com os parametros TelemetryEnabled e XRayEnabled antes de provisionar.'
+          jq -e '.Resources.AuthFunction.Properties.Environment.Variables.Telemetry__Enabled == "true"' "$template" > /dev/null || {
+            echo '::error::Publique uma nova revisao SAM com OpenTelemetry e New Relic sempre ativos antes de provisionar.'
             exit 1
           }
           code_uri="$(jq -er '.Resources.AuthFunction.Properties.CodeUri | select(type == "string")' "$template")"
@@ -96,9 +90,8 @@ jobs:
             --expected-bucket-owner 121754142617 --key "$zip_key" --query '{Version:VersionId,Size:ContentLength}'
           echo "ZIP_KEY=$zip_key" >> "$GITHUB_ENV"
       - name: Check Collector layer access
-        if: ${{ inputs.telemetry_enabled }}
         run: |
-          layer_arn="$(jq -er '.Resources.AuthFunction.Properties.Layers["Fn::If"][1][0] | select(type == "string")' \
+          layer_arn="$(jq -er '.Resources.AuthFunction.Properties.Layers[0] | select(type == "string")' \
             "artifacts/deploy/sam-$TARGET_ENVIRONMENT.json")"
           aws lambda get-layer-version-by-arn --arn "$layer_arn" \
             --query '{Arn:LayerVersionArn,Architectures:CompatibleArchitectures,CodeSize:Content.CodeSize}' --output json
@@ -137,6 +130,15 @@ jobs:
           jq -e --arg vpc "$VPC_ID" --arg auth "mecanica-$TARGET_ENVIRONMENT-auth" --arg db "mecanica-$TARGET_ENVIRONMENT-postgres" \
             '.SecurityGroups | length == 2 and all(.[]; .VpcId == $vpc) and any(.[]; .GroupName == $auth) and any(.[]; .GroupName == $db)' \
             "$RUNNER_TEMP/groups.json" > /dev/null
+      - name: Check New Relic credential metadata
+        run: |
+          secret="/mecanica/$TARGET_ENVIRONMENT/observability/newrelic-license-key"
+          aws secretsmanager describe-secret --secret-id "$secret" \
+            --query '{ARN:ARN,DeletedDate:DeletedDate}' --output json > "$RUNNER_TEMP/newrelic-secret.json"
+          jq -e '.DeletedDate == null' "$RUNNER_TEMP/newrelic-secret.json" > /dev/null
+          current="$(aws secretsmanager list-secret-version-ids --secret-id "$secret" \
+            --query "length(Versions[?contains(VersionStages, 'AWSCURRENT')])" --output text)"
+          test "$current" = 1 || { echo '::error::Cadastre a License Key no Secret do ambiente antes de provisionar.'; exit 1; }
       - name: Deploy with SAM
         run: |
           sam deploy --config-env "$TARGET_ENVIRONMENT" --config-file "$GITHUB_WORKSPACE/samconfig.toml" \
@@ -144,12 +146,12 @@ jobs:
             --parameter-overrides "Environment=$TARGET_ENVIRONMENT" "ArtifactCommit=$ARTIFACT_COMMIT" \
               "WorkloadSubnetIds=$WORKLOAD_SUBNET_IDS" "AuthSecurityGroupId=$AUTH_SECURITY_GROUP_ID" \
               "DatabaseSecurityGroupId=$DATABASE_SECURITY_GROUP_ID" "ZipKey=$ZIP_KEY" \
-              "TelemetryEnabled=$TELEMETRY_ENABLED" "XRayEnabled=$XRAY_ENABLED" \
+              "XRayEnabled=$XRAY_ENABLED" \
             --no-confirm-changeset --no-fail-on-empty-changeset --no-progressbar \
             | tee artifacts/deploy/sam-deploy.txt
           {
             echo "SAM concluido: $STACK_NAME; ambiente: $TARGET_ENVIRONMENT; codigo/template: $ARTIFACT_COMMIT; workflow: $GITHUB_SHA."
-            echo "Telemetria solicitada: $TELEMETRY_ENABLED. Ingestao externa nao validada por este workflow."
+            echo "OpenTelemetry e Collector New Relic sempre ativos. Ingestao externa pendente de conferencia."
             echo "X-Ray nativo solicitado: $XRAY_ENABLED. Segmentos nativos nao conferidos por este workflow."
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
