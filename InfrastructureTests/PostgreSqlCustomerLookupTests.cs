@@ -697,7 +697,12 @@ public class PostgreSqlCustomerLookupTests
             if (received) break;
             await Task.Delay(200);
         }
-        Assert.That(received, Is.True, "A primeira chamada deve entregar os três sinais sem outra invocação.");
+        var diagnostic = destination?.DescribeReceivedSignals()
+            ?? $"traces={output.Contains("ResourceSpans", StringComparison.Ordinal)}, "
+            + $"metrics={output.Contains("ResourceMetrics", StringComparison.Ordinal)}, "
+            + $"logs={output.Contains("ResourceLog", StringComparison.Ordinal)}";
+        Assert.That(received, Is.True,
+            $"A primeira chamada deve entregar os três sinais sem outra invocação. Collector={collector.State}; {diagnostic}.");
         Assert.That(output, Does.Contain("mecanica-auth").And.Contain("postgresql")
             .And.Contain("service.version").And.Contain("deployment.environment.name"));
         Assert.That(output, Does.Not.Contain(Cpf).And.Not.Contain("test-only-auth-password")

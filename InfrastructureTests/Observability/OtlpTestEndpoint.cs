@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Text;
+using DotNet.Testcontainers.Configurations;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -53,10 +54,29 @@ internal sealed class OtlpTestEndpoint : IAsyncDisposable
             context.Response.StatusCode = status;
             context.Response.ContentType = "application/x-protobuf";
         });
-        await application.StartAsync();
-        var address = application.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
-        endpoint.CollectorEndpoint = $"http://host.docker.internal:{new Uri(address).Port}";
-        return endpoint;
+        try
+        {
+            await application.StartAsync();
+            var address = application.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+            var port = checked((ushort)new Uri(address).Port);
+            // Expor antes de construir o Collector para configurar seu acesso ao host em Windows/Linux.
+            await TestcontainersSettings.ExposeHostPortsAsync(port);
+            endpoint.CollectorEndpoint = $"http://host.testcontainers.internal:{port}";
+            return endpoint;
+        }
+        catch
+        {
+            await application.DisposeAsync();
+            throw;
+        }
+    }
+
+    public string DescribeReceivedSignals()
+    {
+        var captured = Requests;
+        return string.Join(", ", new[] { "/v1/traces", "/v1/metrics", "/v1/logs" }.Select(path =>
+            $"{path}: {captured.Count(item => item.Path == path)} requests, "
+            + $"{captured.Count(item => item.Path == path && item.Status == 200)} HTTP 200"));
     }
 
     public async Task StopAsync()
