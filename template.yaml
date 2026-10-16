@@ -8,11 +8,6 @@ Parameters:
   Environment:
     Type: String
     AllowedValues: [hom, prd]
-  TelemetryEnabled:
-    Type: String
-    AllowedValues: ['true', 'false']
-    Default: 'false'
-    Description: Ativacao explicita do Collector local; permanece desabilitada nos workflows atuais.
   XRayEnabled:
     Type: String
     AllowedValues: ['true', 'false']
@@ -37,7 +32,6 @@ Parameters:
     Description: Chave S3 produzida pelo sam package e publicada com este template.
 
 Conditions:
-  EnableTelemetry: !Equals [!Ref TelemetryEnabled, 'true']
   EnableXRay: !Equals [!Ref XRayEnabled, 'true']
 
 Resources:
@@ -78,10 +72,8 @@ Resources:
       Runtime: dotnet10
       Architectures: [x86_64]
       Tracing: !If [EnableXRay, Active, PassThrough]
-      Layers: !If
-        - EnableTelemetry
-        - ['arn:aws:lambda:us-east-1:184161586896:layer:opentelemetry-collector-amd64-0_22_0:1']
-        - !Ref AWS::NoValue
+      Layers:
+        - 'arn:aws:lambda:us-east-1:184161586896:layer:opentelemetry-collector-amd64-0_22_0:1'
       Handler: GerenciamentoMecanica.Autenticacao.Function::GerenciamentoMecanica.Autenticacao.Function.FunctionHandler::HandleAsync
       Role: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mecanica-${Environment}-auth-runtime'
       VpcConfig:
@@ -94,10 +86,11 @@ Resources:
       Environment:
         Variables:
           Runtime__Environment: !Ref Environment
-          Telemetry__Enabled: !Ref TelemetryEnabled
-          OTEL_EXPORTER_OTLP_ENDPOINT: !If [EnableTelemetry, 'http://127.0.0.1:4318', !Ref AWS::NoValue]
-          OPENTELEMETRY_COLLECTOR_CONFIG_URI: !If [EnableTelemetry, '/var/task/Observability/collector.yaml', !Ref AWS::NoValue]
-          GOMEMLIMIT: !If [EnableTelemetry, '96MiB', !Ref AWS::NoValue]
+          Telemetry__Enabled: 'true'
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318
+          OPENTELEMETRY_COLLECTOR_CONFIG_URI: /var/task/Observability/collector.yaml
+          NEW_RELIC_LICENSE_KEY_SECRET: !Sub '/mecanica/${Environment}/observability/newrelic-license-key'
+          GOMEMLIMIT: 96MiB
       LoggingConfig:
         LogFormat: JSON
         LogGroup: !Ref AuthLogs

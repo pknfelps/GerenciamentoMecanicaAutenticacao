@@ -61,43 +61,17 @@ O teste `FirstIsolatedInvocationExportsToCollectorAndStoppedCollectorDoesNotBrea
 
 FunctionTests cobre configuração, opções nativas, recursos, filtros, dimensões, contexto, correlação, orçamento compartilhado, endpoint lento e descarte. InfrastructureTests amplia a fixture PostgreSQL existente para spans relacionados, erro real sanitizado, cancelamento, fechamento de conexão e inicialização reutilizada. Todos os testes anteriores permanecem; indisponibilidade do Docker falha os testes de integração, sem ignorá-los.
 
-## Collector preparado no SAM
+## Collector de produção no SAM
 
-O Collector da API pertence ao EKS/infraestrutura; o da autenticação é uma extensão no próprio ambiente da Lambda. Seu YAML está em [Function/Observability/collector.yaml](../Function/Observability/collector.yaml), incluído no build/publish e no ZIP. Não há dependência de outro repositório para empacotá-lo.
+OpenTelemetry e a layer oficial amd64 0.22.0 são permanentes na Lambda implantada. O único Function/Observability/collector.yaml acompanha o ZIP e exporta para New Relic por Secrets Manager nativo. SAM fixa Telemetry__Enabled=true, endpoint 127.0.0.1:4318, URI /var/task/Observability/collector.yaml, GOMEMLIMIT=96MiB e nome do Secret do próprio ambiente. Não há parâmetros de desativação; XRayEnabled continua independente.
 
-O parâmetro SAM `TelemetryEnabled` aceita somente `true` ou `false` e tem padrão `false`. A condição `EnableTelemetry` controla a layer e suas variáveis. Desabilitado, não há layer, endpoint/URI/GOMEMLIMIT adicionais nem providers da aplicação. O template fornece `Telemetry__Enabled=false`; o JSON também permanece desabilitado. O auth-provision recebe telemetry_enabled=false por padrão e passa TelemetryEnabled explicitamente em toda execução, determinando a configuração da nova versão. Com true, consulta antes os metadados da layer do template e falha se não houver acesso; a permissão lambda:GetLayerVersion ainda precisa ser preparada no bootstrap antes da ativação. CI valida o YAML; auth-publish confere JSON/YAML no build. Templates sem TelemetryEnabled são rejeitados com orientação de republicar. A atualização do Gateway é necessária para consumir a nova versão numérica; versões antigas já publicadas não são modificadas por esse parâmetro.
+Configuração local JSON/Compose permanece opt-in e usa debug sem AWS/New Relic; isso não é uma opção de deploy. O teste PostgreSQL possui dois casos: Compose local e YAML empacotado New Relic. No segundo, usa destino HTTP/protobuf local e chave fictícia, com overrides nativos de endpoint/header/receiver. Como Contrib 0.151.0 não inclui decouple, os processors são retirados SOMENTE do teste de transporte. O YAML de produção preserva memory_limiter → decouple; ciclo/fila/congelamento da extensão precisam de validação AWS.
 
-| Configuração quando habilitada | Valor |
-|---|---|
-| Layer Collector-only | `arn:aws:lambda:us-east-1:184161586896:layer:opentelemetry-collector-amd64-0_22_0:1` |
-| Release da layer / Collector | `0.22.0` / `0.151.0` |
-| `Telemetry__Enabled` | `true` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://127.0.0.1:4318` |
-| `OPENTELEMETRY_COLLECTOR_CONFIG_URI` | `/var/task/Observability/collector.yaml` |
-| `GOMEMLIMIT` | `96MiB` |
+Workflows validam esse transporte sem Secrets reais e conferem os arquivos no publish. O preflight da layer/credencial é obrigatório no provisionamento. [Operação, cadastro e sequência](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
 
-A layer é somente o Collector, sem outra instrumentação .NET. ARN e arquitetura amd64 são fixos para us-east-1/x86_64. [Release oficial](https://github.com/open-telemetry/opentelemetry-lambda/releases/tag/layer-collector%2F0.22.0) e [configuração da extensão](https://github.com/open-telemetry/opentelemetry-lambda/blob/layer-collector/0.22.0/collector/README.md). A existência/acessibilidade desse ARN na AWS e as permissões para utilizá-lo ainda precisam ser conferidas antes de ativar.
+## Resultados históricos anteriores à adoção permanente
 
-O YAML recebe somente OTLP HTTP/protobuf em loopback, com memory_limiter de 64 MiB, margem de 16 MiB e verificação a cada segundo. O limite Go de 96 MiB é uma meta de memória do processo Collector, não uma reserva nem limite isolado da extensão; ela compartilha os 512 MB da função. Os três pipelines usam debug basic, sem batch, filas persistentes, credenciais, destino externo ou mudança de identidade. Não há receiver para stdout/logs da plataforma nem exporter X-Ray. A extensão pode usar eventos nativos de ciclo de vida internamente; eles não integram os pipelines de coleta definidos aqui.
-
-O debug basic emite resumos de lotes e não exibe os registros completos. Sem batch adicional, os lotes recebidos do SDK seguem diretamente ao exporter diagnóstico. O flush existente continua limitado a 500 ms compartilhados, com reserva de resposta e timeout OTLP de 100 ms. A futura exportação para New Relic exigirá nova revisão do ciclo de vida/filas da extensão; a validação atual não comprova congelamento, entrega durável ou consumo real de recursos.
-
-### Conferência local do YAML empacotado
-
-```powershell
-docker run --rm --volume "${PWD}/Function/Observability/collector.yaml:/etc/otelcol-contrib/collector.yaml:ro" otel/opentelemetry-collector-contrib:0.151.0 validate --config=/etc/otelcol-contrib/collector.yaml
-
-dotnet test InfrastructureTests/InfrastructureTests.csproj -c Release --filter Name~FirstIsolatedInvocation
-```
-
-A fixture executa dois casos: configuração original do Compose com Contrib 0.161.0 e configuração copiada ao output com Contrib 0.151.0. No segundo, overrides nativos de `--config=yaml:...` alteram somente o bind para `0.0.0.0:4318` (acesso do teste ao container) e debug para detailed (inspeção). O arquivo empacotado permanece loopback/basic. O teste confere os três sinais da primeira chamada isolada, identidade/correlação, ausência de dados sensíveis e autenticação após parar o Collector. Bootstrap injetado e PostgreSQL descartável evitam acesso AWS/RDS reais.
-
-Essa execução usa o container Contrib correspondente, não o binário da extensão ou o ambiente real da Lambda. A validação do SAM é local; não baixar layers pela API AWS nem executar `sam local invoke` que consulte a conta nesta entrega. Deploy/ativação, permissões, congelamento e memória/tempo reais continuam pendentes.
-
-## Limites
-
-SAM, YAML e workflows do Collector preparados, com padrão desabilitado. Preparação declarativa X-Ray no SAM/Gateway e permissões no bootstrap, sem aplicação IAM ou alteração de recursos AWS; SQL preservado e nenhum workflow remoto executado. Não habilitar exportação em hom/prd até conferir layer/permissões e comprovar extensão, conectividade, tempo/memória e ingestão. X-Ray, correlação Gateway/API e New Relic continuam separados. E5.3/E5.13 permanecem parciais.
-
+Os registros abaixo descrevem configurações antigas; não são instruções de ativação atuais.
 
 ## Resultado local — 14/10/2026
 
@@ -107,18 +81,10 @@ SAM, YAML e workflows do Collector preparados, com padrão desabilitado. Prepara
 
 278 testes aprovados, zero falhas/ignorados: Application 21, Contract 10, Function 105 e Infrastructure 142. Restore/build Release sem avisos/erros; sam validate/cfn-lint e build com TelemetryEnabled=false/true aprovados. Publish linux-x64 e layout ZIP conferidos, com certificado/JSON/YAML/runtimeconfig/deps e sem exporter de teste. YAML validado com Contrib 0.151.0; basic recebeu três sinais sem reproduzir o payload, com GOMEMLIMIT=96MiB. A fixture executou os dois perfis e comprovou primeira invocação, identidade/correlação/sanitização e continuidade sem Collector. Resultados aceitos em artifacts/e5-lambda-collector/accepted/*.trx; resumo em validation.json e IMPLEMENTACAO.md. Nenhuma operação AWS; as comprovações reais da extensão e a ativação continuam pendentes.
 
-## Integração dos workflows — 15/10/2026
+## Workflows vigentes e validação posterior
 
-O job configuration de auth-ci valida o YAML pelo comando nativo do Collector 0.151.0. Os testes .NET continuam obrigatórios, com os dois cenários de Collector e Docker ativo. auth-publish inclui checks dos dois arquivos de observabilidade no build SAM, sem alterar o pacote compartilhado, a publicação imutável ou os checksums.
+Não há telemetry_enabled ou new_relic_enabled no auth-provision, nem parâmetros SAM equivalentes. Cada deploy sempre instala a layer e configura New Relic; o usuário escolhe apenas ambiente, commit publicado e X-Ray. A configuração local de instrumentação permanece útil para testes de ativação/desativação em memória, sem mudar a decisão de produção.
 
-auth-provision oferece telemetry_enabled=false por padrão, exige template novo com TelemetryEnabled e passa a opção explicitamente ao SAM. Somente habilitado consulta a layer referenciada pelo template; a projeção da resposta contém apenas ARN, arquiteturas e tamanho. O resumo não declara entrega ao destino. Não há novo job, aprovação ou chamada direta CloudFormation. auth-destroy permanece inalterado: sam delete exclui a função, não a layer pública.
+CI valida YAML/exporter com chave fictícia, publish inclui configuração e certificado, provision exige revisão nova com telemetria fixa e auth-destroy mantém sam delete. Mudança da chave exige nova inicialização/versão da Lambda e atualização do Gateway. Runtime, HTTP/JWT, flush e sanitização não mudam. [Procedimento completo](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
 
-Esta integração é local. Após PR/main, executar publish de nova revisão → provision com false. Antes de true, preparar IAM/conferir layer e planejar a validação AWS. Atualizar o Gateway para consumir a nova versão numérica, quando necessário. APIs/SSM v2/OpenAPI e regras JWT permanecem iguais. E5.3/E5.13 continuam parciais.
-
-## X-Ray nativo — configuração independente preparada em 15/10/2026
-
-`XRayEnabled=false` é o padrão do SAM e configura PassThrough, preservando propagação sem envio automático dos segmentos da função. true configura Active. O controle não altera TelemetryEnabled, W3C, desativação da extração automática X-Ray no SDK, Collector, exportação OTLP ou código de autenticação. É possível selecionar qualquer combinação; veja a tabela no [procedimento de deploy](DEPLOY.md#x-ray-nativo--preparação-local-de-15102026).
-
-O auth-provision recebe xray_enabled=false e envia as duas opções explicitamente, exigindo template novo. A permissão de escrita nativa é preparada no bootstrap persistente, com somente PutTraceSegments/PutTelemetryRecords em us-east-1; leitura da layer exata é preparada somente para as pipelines auth. A aplicação IAM depende de plano AWS salvo aprovado posteriormente. Nada foi ativado na AWS nesta entrega.
-
-Os segmentos nativos não percorrem a sanitização OpenTelemetry da aplicação. Antes da ativação para uso normal, inspecionar com chamadas controladas e dados fictícios. Validação local de Terraform, policies, SAM nas quatro combinações e workflow não comprova conteúdo dos segmentos, amostragem, congelamento, tempo/memória, correlação W3C/X-Ray ou ausência de duplicação real. E5.3/E5.14 permanecem abertas; ingestão New Relic/coleta CloudWatch também pendentes.
+A primeira chamada isolada e falhas 401/429/5xx/lentidão/offline são exercitadas localmente; leitura IAM/Secrets real, decouple e ingestão New Relic precisam de conferência AWS. Nenhuma execução remota decorre desta simplificação.
