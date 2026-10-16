@@ -230,7 +230,7 @@ A parte 5 define no bootstrap a role persistente com leitura somente de AWSCURRE
 
 ## Observabilidade — E5
 
-Na Lambda implantada, OpenTelemetry, layer Collector e exportação New Relic são permanentes. O SAM fixa Telemetry__Enabled=true e os nomes/configurações públicas; não há parâmetros de ativação. O único YAML de produção é Function/Observability/collector.yaml, com leitura nativa da License Key no Secrets Manager. Sem chave em ambiente, ZIP, Git ou pipeline. O Compose e os testes locais continuam usando configurações/credenciais fictícias independentes.
+Na Lambda implantada, OpenTelemetry, layer Collector e exportação New Relic são permanentes. O SAM fixa Telemetry__Enabled=true e os nomes/configurações públicas; não há parâmetros de ativação. O único YAML de produção é Function/Observability/collector.yaml, com leitura nativa da License Key no Secrets Manager. Sem chave em ambiente, ZIP, Git ou pipeline. O Compose permanece disponível para conferência manual. Todos os testes automatizados de telemetria da Lambda foram removidos por decisão do mantenedor; os testes funcionais de autenticação, configuração AWS simulada e PostgreSQL permanecem. A instrumentação de produção não foi alterada.
 
 auth-provision recebe somente environment, artifact_commit e xray_enabled; consulta sempre a layer e metadados da credencial. É necessário aplicar bootstrap/cadastrar chave e publicar uma revisão nova antes de provisionar. Defaults/configuração local da aplicação não mudam: o SAM fornece o valor fixo habilitado na AWS.
 

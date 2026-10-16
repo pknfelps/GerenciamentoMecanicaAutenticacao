@@ -1,5 +1,7 @@
 # Observabilidade local da autenticação
 
+**2026-10-15 — Decisão vigente sobre testes de Collectors/New Relic:** removidos os testes de transporte/conexão dos Collectors locais e New Relic na API/Lambda, os receptores OTLP fictícios e seus auxiliares. CI não executa mais as imagens Contrib para validar exporter/YAML. Não há cenários ignorados ou substituídos por mocks. Na Lambda, todos os testes de telemetria, incluindo instrumentação InMemory, foram removidos por decisão do mantenedor; testes funcionais HTTP/JWT/PostgreSQL e logs do contrato permanecem; configurações de produção, Compose manual, SAM/publish e preflights operacionais de credencial permanecem. Conectividade/ingestão e comportamento dos Collectors passam a conferência operacional após deploy. Resultados anteriores são históricos; E5 continua parcial. Nenhum deploy, workflow remoto ou alteração AWS nesta remoção.
+
 A Function produz traces, métricas e logs OTLP somente com ativação explícita. A configuração versionada é [observability.json](../Function/Observability/observability.json); variáveis de ambiente prevalecem sobre o JSON. A leitura acontece uma vez, sem recarga.
 
 ## Configuração
@@ -55,19 +57,19 @@ sam validate --lint
 sam build --template-file template.yaml
 ```
 
-O Compose inicia **somente o Collector**, com OTLP HTTP/protobuf em `127.0.0.1:4319`, memory_limiter/batch/debug, sem credencial ou persistência. Não executa a Function. A chamada integrada local acontece pelos testes do handler, sem script ou executável novo.
+O Compose inicia **somente o Collector**, com OTLP HTTP/protobuf em `127.0.0.1:4319`, memory_limiter/batch/debug, sem credencial ou persistência. Não executa a Function e permanece disponível para operação manual. Não há testes automatizados de telemetria na Lambda; a conferência dos sinais e dos Collectors é operacional.
 
-O teste `FirstIsolatedInvocationExportsToCollectorAndStoppedCollectorDoesNotBreakAuthentication` usa o mesmo YAML, inicia seu próprio Collector em porta aleatória com Testcontainers e PostgreSQL descartável. Uma única invocação deve entregar os três sinais; depois o Collector é parado e a autenticação continua. Assim, esse teste não depende do Compose manual estar ativo. Use `dotnet test InfrastructureTests/InfrastructureTests.csproj -c Release --filter Name~FirstIsolatedInvocation` para repetir essa conferência.
+Por decisão do mantenedor, os testes de transporte para Collector local e YAML de produção/New Relic foram removidos, incluindo destinos HTTP fictícios, cenários 401/429/503/lentidão/offline e o encaminhamento de portas de teste.
 
-FunctionTests cobre configuração, opções nativas, recursos, filtros, dimensões, contexto, correlação, orçamento compartilhado, endpoint lento e descarte. InfrastructureTests amplia a fixture PostgreSQL existente para spans relacionados, erro real sanitizado, cancelamento, fechamento de conexão e inicialização reutilizada. Todos os testes anteriores permanecem; indisponibilidade do Docker falha os testes de integração, sem ignorá-los.
+FunctionTests preserva os testes funcionais do handler, contrato HTTP e logs sanitizados. InfrastructureTests preserva configuração AWS simulada, documentos, JWT e integração PostgreSQL funcional. Foram removidos todos os testes de instrumentação, configuração de telemetria, correlação, sanitização OTLP, métricas e flush, inclusive os cenários misturados à fixture PostgreSQL e seus auxiliares. Os projetos não referenciam mais OpenTelemetry.Exporter.InMemory. Indisponibilidade do Docker falha os testes PostgreSQL, sem ignorá-los.
 
 ## Collector de produção no SAM
 
 OpenTelemetry e a layer oficial amd64 0.22.0 são permanentes na Lambda implantada. O único Function/Observability/collector.yaml acompanha o ZIP e exporta para New Relic por Secrets Manager nativo. SAM fixa Telemetry__Enabled=true, endpoint 127.0.0.1:4318, URI /var/task/Observability/collector.yaml, GOMEMLIMIT=96MiB e nome do Secret do próprio ambiente. Não há parâmetros de desativação; XRayEnabled continua independente.
 
-Configuração local JSON/Compose permanece opt-in e usa debug sem AWS/New Relic; isso não é uma opção de deploy. O teste PostgreSQL possui dois casos: Compose local e YAML empacotado New Relic. No segundo, usa destino HTTP/protobuf local e chave fictícia, com overrides nativos de endpoint/header/receiver. Como Contrib 0.151.0 não inclui decouple, os processors são retirados SOMENTE do teste de transporte. O YAML de produção preserva memory_limiter → decouple; ciclo/fila/congelamento da extensão precisam de validação AWS.
+Configuração local JSON/Compose permanece opt-in e usa debug sem AWS/New Relic; isso não é uma opção de deploy. O YAML de produção preserva memory_limiter → decouple. Não há testes automatizados dos Collectors nem validação da imagem no CI; transporte, ciclo/fila/congelamento e ingestão exigem conferência operacional posterior.
 
-Workflows validam esse transporte sem Secrets reais e conferem os arquivos no publish. O preflight da layer/credencial é obrigatório no provisionamento. [Operação, cadastro e sequência](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
+Workflows continuam executando os testes .NET funcionais e conferindo os arquivos no publish. SAM/workflows mantêm suas validações estruturais; o preflight de metadados da layer/credencial continua obrigatório no provisionamento. [Operação, cadastro e sequência](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
 
 ## Resultados históricos anteriores à adoção permanente
 
@@ -83,8 +85,12 @@ Os registros abaixo descrevem configurações antigas; não são instruções de
 
 ## Workflows vigentes e validação posterior
 
-Não há telemetry_enabled ou new_relic_enabled no auth-provision, nem parâmetros SAM equivalentes. Cada deploy sempre instala a layer e configura New Relic; o usuário escolhe apenas ambiente, commit publicado e X-Ray. A configuração local de instrumentação permanece útil para testes de ativação/desativação em memória, sem mudar a decisão de produção.
+Não há telemetry_enabled ou new_relic_enabled no auth-provision, nem parâmetros SAM equivalentes. Cada deploy sempre instala a layer e configura New Relic; o usuário escolhe apenas ambiente, commit publicado e X-Ray. A configuração local de instrumentação permanece disponível para operação manual; seus testes automatizados foram removidos, sem mudar a decisão de produção.
 
-CI valida YAML/exporter com chave fictícia, publish inclui configuração e certificado, provision exige revisão nova com telemetria fixa e auth-destroy mantém sam delete. Mudança da chave exige nova inicialização/versão da Lambda e atualização do Gateway. Runtime, HTTP/JWT, flush e sanitização não mudam. [Procedimento completo](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
+CI executa os testes .NET e valida SAM/workflows, sem teste de Collector/exporter; publish inclui configuração e certificado, provision exige revisão nova com telemetria fixa e auth-destroy mantém sam delete. Mudança da chave exige nova inicialização/versão da Lambda e atualização do Gateway. Runtime, HTTP/JWT, flush e sanitização não mudam. [Procedimento completo](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
 
-A primeira chamada isolada e falhas 401/429/5xx/lentidão/offline são exercitadas localmente; leitura IAM/Secrets real, decouple e ingestão New Relic precisam de conferência AWS. Nenhuma execução remota decorre desta simplificação.
+Não há testes de conexão com Collector local ou New Relic. Primeira chamada isolada, falhas de exportação, leitura IAM/Secrets real, decouple e ingestão precisam de conferência operacional na AWS. Nenhuma execução remota decorre desta simplificação.
+
+**Validação após remoção dos testes de Collectors/New Relic — 15/10/2026:** build Release e 275 testes restantes aprovados, zero falhas/ignorados. Actionlint/ShellCheck aprovados nos dois CIs alterados. Evidências locais em artifacts/collector-tests-removal. Nenhum teste novo de conexão, Collector iniciado, workflow remoto ou operação AWS nesta validação; Docker utilizado somente pelos testes PostgreSQL preservados.
+
+**Validação após remoção de todos os testes de telemetria da Lambda — 15/10/2026:** restore e build Release concluídos; 217 testes funcionais restantes aprovados (21 Application, 10 Contract, 49 Function e 137 Infrastructure), zero falhas e zero ignorados. Conferência dos quatro projetos de teste sem referências de instrumentação OpenTelemetry, exporters InMemory ou auxiliares de flush. Evidências locais em `artifacts/lambda-telemetry-tests-removal`. Instrumentação de produção preservada; nenhuma operação AWS ou execução remota.
