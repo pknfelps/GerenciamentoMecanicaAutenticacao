@@ -49,6 +49,23 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           allowed-account-ids: '121754142617'
           role-session-name: auth-destroy-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Check Gateway removal
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in hom|prd) ;; *) exit 1 ;; esac
+          test "$AWS_REGION" = us-east-1
+          name="mecanica-$TARGET_ENVIRONMENT-gateway"
+          apis="$(aws apigateway get-rest-apis --query "items[?name=='$name'].id" --output json)"
+          if ! jq -e 'type == "array" and length == 0' <<< "$apis" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: REST API $name encontrada ou resposta invalida. Conclua gateway-destroy."
+            exit 1
+          fi
+          links="$(aws apigatewayv2 get-vpc-links --query "Items[?Name=='$name'].VpcLinkId" --output json)"
+          if ! jq -e 'type == "array" and length == 0' <<< "$links" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: VPC Link $name encontrado ou resposta invalida. Conclua gateway-destroy."
+            exit 1
+          fi
+
       - name: Delete authentication with SAM
         run: |
           sam delete \
@@ -57,14 +74,27 @@ jobs:
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --no-prompts
-          echo "Descarte SAM concluido: $STACK_NAME. ZIP atual e templates operacionais removidos quando existentes; IAM persistente, bucket e contratos preservados." >> "$GITHUB_STEP_SUMMARY"
-      - name: Check remaining network interfaces
+          echo "Recursos SAM removidos: $STACK_NAME; falta confirmar liberacao da rede. IAM persistente, bucket e contratos preservados." >> "$GITHUB_STEP_SUMMARY"
+      - name: Check authentication network removal
         run: |
-          auth_sgs="$(aws ec2 describe-security-groups \
+          set -euo pipefail
+
+          groups="$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=mecanica-$TARGET_ENVIRONMENT-auth" \
-            --query 'SecurityGroups[].GroupId' --output text)"
-          for auth_sg in $auth_sgs; do
-            aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$auth_sg" \
-              --query 'NetworkInterfaces[].{Id:NetworkInterfaceId,Status:Status,Type:InterfaceType,Managed:RequesterManaged}'
+            --query 'SecurityGroups[].{Id:GroupId,Egress:IpPermissionsEgress}' --output json)"
+          if ! jq -e 'type == "array" and all(.[]; (.Id | type == "string") and (.Egress | type == "array" and length == 0))' \
+            <<< "$groups" > /dev/null; then
+            echo "::error::$TARGET_ENVIRONMENT: regras de saida da autenticacao remanescentes ou resposta invalida. Conclua auth-destroy."
+            exit 1
+          fi
+          group_ids="$(jq -r '.[].Id' <<< "$groups")"
+          for group in $group_ids; do
+            interfaces="$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$group" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output json)"
+            if ! jq -e 'type == "array" and length == 0' <<< "$interfaces" > /dev/null; then
+              echo "::error::$TARGET_ENVIRONMENT: ENIs da autenticacao no SG $group pendentes ou resposta invalida. Aguarde a liberacao e repita auth-destroy."
+              exit 1
+            fi
           done
-          echo 'Conferir liberacao das ENIs antes de descartar banco/base.' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Descarte auth confirmado em $TARGET_ENVIRONMENT: sem ENIs ou regras de saida remanescentes." >> "$GITHUB_STEP_SUMMARY"
