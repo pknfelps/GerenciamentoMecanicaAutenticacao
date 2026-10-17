@@ -47,11 +47,11 @@ Templates/OpenAPI/checksums mantêm SHA-256 do S3 e If-None-Match: *. Em Precond
 
 ## Provisionar — auth-provision
 
-Inputs: environment, artifact_commit (SHA completo minúsculo de 40 caracteres, publicado e ancestral da branch selecionada) e xray_enabled (padrão false). artifact_commit seleciona código/template; github.sha fixa o workflow. OpenTelemetry, layer e New Relic são permanentes, sem inputs de ativação.
+Inputs: environment e artifact_commit (SHA completo minúsculo de 40 caracteres, publicado e ancestral da branch selecionada). artifact_commit seleciona código/template; github.sha fixa o workflow. OpenTelemetry, layer, New Relic e X-Ray são permanentes, sem inputs de ativação.
 
 1. Baixar template/checksum e conferir hash/ZIP. Exigir template novo com Telemetry__Enabled=true fixo; artefatos condicionais antigos devem ser republicados. Consultar sempre a layer extraída de Layers[0], mostrando apenas ARN, arquiteturas e tamanho, nunca URL de download.
 2. Ler os quatro parâmetros públicos SSM de rede; conferir VPC, duas subnets privadas em AZs distintas e SGs. Inspecionar somente os metadados do Secret New Relic do ambiente, exigindo AWSCURRENT. Bootstrap aplicado e chave cadastrada são pré-requisitos, mesmo em prd.
-3. Executar sam deploy --no-confirm-changeset --no-fail-on-empty-changeset com os parâmetros de rede/artefato e XRayEnabled. Sem parâmetros de telemetria/destino. A layer, o endpoint interno e /var/task/Observability/collector.yaml são fixos no SAM. XRayEnabled=false usa PassThrough; true usa Active.
+3. Executar sam deploy --no-confirm-changeset --no-fail-on-empty-changeset com os parâmetros de rede/artefato. Sem parâmetros de telemetria/destino. A layer, o endpoint interno, /var/task/Observability/collector.yaml e Tracing: Active são fixos no SAM.
 4. SAM aguarda e mostra resultados; resumo registra telemetria/New Relic configurados, sem afirmar ingestão. Não há comandos CloudFormation diretos nem nova aprovação intermediária. Atualizar Gateway para consumir a nova versão numérica.
 
 Nenhuma senha, JWT ou License Key é lida pela pipeline. O provider da extensão lê o valor com auth-runtime. [Procedimento completo](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
@@ -109,17 +109,12 @@ Sequência: bootstrap aplicado → configuração GitHub → base → banco/Job 
 
 E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas para suas comprovações reais. Gateway, compatibilidade real com API e New Relic/OTel continuam entregas posteriores.
 
-## X-Ray nativo — preparação local de 15/10/2026
+## X-Ray nativo sempre ativo — 15/10/2026
 
-O input xray_enabled mantém padrão false e é passado explicitamente como XRayEnabled. OpenTelemetry, Collector e New Relic permanecem habilitados em ambos os casos.
-
-| xray_enabled | Configuração |
-|---|---|
-| false | OpenTelemetry/New Relic permanentes; tracing nativo PassThrough |
-| true | OpenTelemetry/New Relic permanentes; tracing nativo Active |
+O SAM fixa Tracing: Active em hom/prd, sem parâmetro ou input de ativação. OpenTelemetry, Collector e New Relic também permanecem habilitados. O provisionamento exige template publicado com tracing Active; publique uma revisão nova antes de executar auth-provision.
 
 Não há regra própria de amostragem. Segmentos nativos não passam pela sanitização da aplicação. Preservados AWS::LanguageExtensions, AutoPublishAliasAllProperties=true e role persistente. Publicar revisão nova, provisionar e atualizar Gateway para usar a nova versão; correlação W3C/X-Ray e ingestão nativa New Relic continuam pendentes.
 
 ## New Relic US
 
-É o único destino de produção. auth-publish confere collector.yaml e observability.json no build; não há segundo YAML diagnóstico no ZIP. auth-provision consulta sempre metadados da layer e da credencial, sem ler seu valor. O único controle de tracing é xray_enabled, independente da instrumentação OpenTelemetry. auth-destroy continua sam delete e preserva Secret/layer pública. [Cadastro, rotação e limites](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
+É o único destino de produção. auth-publish confere collector.yaml e observability.json no build; não há segundo YAML diagnóstico no ZIP. auth-provision consulta sempre metadados da layer e da credencial, sem ler seu valor. Tracing nativo X-Ray e instrumentação OpenTelemetry ficam sempre ativos, sem toggle no provisionamento. auth-destroy continua sam delete e preserva Secret/layer pública. [Cadastro, rotação e limites](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).

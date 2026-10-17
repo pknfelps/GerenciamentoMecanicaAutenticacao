@@ -8,11 +8,6 @@ Parameters:
   Environment:
     Type: String
     AllowedValues: [hom, prd]
-  XRayEnabled:
-    Type: String
-    AllowedValues: ['true', 'false']
-    Default: 'false'
-    Description: Ativacao explicita do tracing nativo X-Ray, independente do OpenTelemetry.
   ArtifactCommit:
     Type: String
     AllowedPattern: '^[0-9a-f]{40}$'
@@ -30,9 +25,6 @@ Parameters:
     Type: String
     AllowedPattern: '^sam/auth/(hom|prd)/.+$'
     Description: Chave S3 produzida pelo sam package e publicada com este template.
-
-Conditions:
-  EnableXRay: !Equals [!Ref XRayEnabled, 'true']
 
 Resources:
   AuthLogs:
@@ -71,7 +63,7 @@ Resources:
       PackageType: Zip
       Runtime: dotnet10
       Architectures: [x86_64]
-      Tracing: !If [EnableXRay, Active, PassThrough]
+      Tracing: Active
       Layers:
         - 'arn:aws:lambda:us-east-1:184161586896:layer:opentelemetry-collector-amd64-0_22_0:1'
       Handler: GerenciamentoMecanica.Autenticacao.Function::GerenciamentoMecanica.Autenticacao.Function.FunctionHandler::HandleAsync

@@ -65,7 +65,7 @@ FunctionTests preserva os testes funcionais do handler, contrato HTTP e logs san
 
 ## Collector de produção no SAM
 
-OpenTelemetry e a layer oficial amd64 0.22.0 são permanentes na Lambda implantada. O único Function/Observability/collector.yaml acompanha o ZIP e exporta para New Relic por Secrets Manager nativo. SAM fixa Telemetry__Enabled=true, endpoint 127.0.0.1:4318, URI /var/task/Observability/collector.yaml, GOMEMLIMIT=96MiB e nome do Secret do próprio ambiente. Não há parâmetros de desativação; XRayEnabled continua independente.
+OpenTelemetry e a layer oficial amd64 0.22.0 são permanentes na Lambda implantada. O único Function/Observability/collector.yaml acompanha o ZIP e exporta para New Relic por Secrets Manager nativo. SAM fixa Telemetry__Enabled=true, endpoint 127.0.0.1:4318, URI /var/task/Observability/collector.yaml, GOMEMLIMIT=96MiB e nome do Secret do próprio ambiente. Não há parâmetros de desativação; o tracing nativo X-Ray também é fixo no SAM com Tracing: Active.
 
 Configuração local JSON/Compose permanece opt-in e usa debug sem AWS/New Relic; isso não é uma opção de deploy. O YAML de produção preserva memory_limiter → decouple. Não há testes automatizados dos Collectors nem validação da imagem no CI; transporte, ciclo/fila/congelamento e ingestão exigem conferência operacional posterior.
 
@@ -85,7 +85,7 @@ Os registros abaixo descrevem configurações antigas; não são instruções de
 
 ## Workflows vigentes e validação posterior
 
-Não há telemetry_enabled ou new_relic_enabled no auth-provision, nem parâmetros SAM equivalentes. Cada deploy sempre instala a layer e configura New Relic; o usuário escolhe apenas ambiente, commit publicado e X-Ray. A configuração local de instrumentação permanece disponível para operação manual; seus testes automatizados foram removidos, sem mudar a decisão de produção.
+Não há telemetry_enabled ou new_relic_enabled no auth-provision, nem parâmetros SAM equivalentes. Cada deploy sempre instala a layer e configura New Relic; o usuário escolhe apenas ambiente e commit publicado; X-Ray também é permanente, fixado como Active no SAM. A configuração local de instrumentação permanece disponível para operação manual; seus testes automatizados foram removidos, sem mudar a decisão de produção.
 
 CI executa os testes .NET e valida SAM/workflows, sem teste de Collector/exporter; publish inclui configuração e certificado, provision exige revisão nova com telemetria fixa e auth-destroy mantém sam delete. Mudança da chave exige nova inicialização/versão da Lambda e atualização do Gateway. Runtime, HTTP/JWT, flush e sanitização não mudam. [Procedimento completo](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
 
