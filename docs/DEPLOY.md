@@ -118,3 +118,11 @@ Não há regra própria de amostragem. Segmentos nativos não passam pela saniti
 ## New Relic US
 
 É o único destino de produção. auth-publish confere collector.yaml e observability.json no build; não há segundo YAML diagnóstico no ZIP. auth-provision consulta sempre metadados da layer e da credencial, sem ler seu valor. Tracing nativo X-Ray e instrumentação OpenTelemetry ficam sempre ativos, sem toggle no provisionamento. auth-destroy continua sam delete e preserva Secret/layer pública. [Cadastro, rotação e limites](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md).
+
+## Bloqueios de descarte — 17/10/2026
+
+auth-destroy autentica por OIDC e consulta as coleções REST API/VPC Link por nome exato do ambiente, antes de executar sam delete. Gateway existente, inclusive VPC Link em exclusão, impede descartar autenticação. Após sam delete, verifica o SG mecanica-<ambiente>-auth: regras de saída ou ENIs remanescentes fazem o job falhar imediatamente. A existência isolada do SG é esperada, pois ele pertence à base.
+
+Não há espera periódica ou exclusão manual de interfaces: aguardar externamente e repetir auth-destroy. As consultas JSON usam paginação automática e falham diante de acesso negado, erro AWS ou parsing inválido. O resumo só confirma o descarte completo após a conferência da rede. Não interpretar a mensagem intermediária de recursos SAM removidos como conclusão da limpeza de rede.
+
+Aplicar o bootstrap revisado antes de utilizar o workflow. A cadeia permanece Gateway -> API/auth -> banco -> base; banco/base também consultam a função, ENIs e regras remanescentes. Preservados sam delete, ausência de aprovação intermediária, IAM persistente e tratamento de artefatos. Nenhum deploy/destroy executado nesta implementação.

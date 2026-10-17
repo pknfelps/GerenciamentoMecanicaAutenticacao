@@ -235,3 +235,7 @@ Na Lambda implantada, OpenTelemetry, layer Collector e exportação New Relic s�
 auth-provision recebe somente environment e artifact_commit; consulta sempre a layer e metadados da credencial. É necessário aplicar bootstrap/cadastrar chave e publicar uma revisão nova antes de provisionar. Defaults/configuração local da aplicação não mudam: o SAM fornece o valor fixo habilitado na AWS.
 
 X-Ray fica permanentemente habilitado no SAM com Tracing: Active, assim como OpenTelemetry/New Relic; não há toggle de ativação. É necessário publicar uma nova revisão do template antes de provisionar; artefatos antigos serão rejeitados pelo workflow. Uma nova versão numérica precisa ser consumida pelo Gateway. [Cadastro, sequência, rotação e limites](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md). A ingestão real, ciclo do decouple/congelamento e demais itens E5 continuam pendentes.
+
+## Bloqueios no auth-destroy — 17/10/2026
+
+Antes de sam delete, o workflow exige ausência da REST API e do VPC Link mecanica-<ambiente>-gateway. Depois da remoção SAM, exige ausência de ENIs e regras de saída do SG reservado auth; o SG pertence à base e pode permanecer. Dependência presente ou consulta inválida/negada encerra com erro. Não há espera automática: aguardar a limpeza e repetir. Publicar primeiro as permissões adicionais do bootstrap. Sem novos inputs, workflows ou operações AWS nesta implementação. [Procedimento](docs/DEPLOY.md).
