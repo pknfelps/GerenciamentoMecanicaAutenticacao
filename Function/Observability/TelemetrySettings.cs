@@ -11,6 +11,7 @@ public sealed class TelemetrySettings
     public int ExportTimeoutMilliseconds { get; private init; }
     public int FlushBudgetMilliseconds { get; private init; }
     public int ResponseReserveMilliseconds { get; private init; }
+    public string[] InboundFormats { get; private init; } = [];
     public TelemetryCollectionOptions Collection { get; private init; } = null!;
 
     public static IConfigurationRoot Configuration()
@@ -59,6 +60,11 @@ public sealed class TelemetrySettings
         {
             var collection = configuration.GetSection("Telemetry:Collection").Get<TelemetryCollectionOptions>() ?? throw Invalid();
             collection.Validate();
+            var inboundFormats = configuration.GetSection("Telemetry:Propagation:InboundFormats").Get<string[]>() ?? [];
+            if (inboundFormats.Length == 0
+                || inboundFormats.Any(format => format is not ("xray" or "tracecontext"))
+                || inboundFormats.Distinct(StringComparer.Ordinal).Count() != inboundFormats.Length)
+                throw Invalid();
             var flush = configuration.GetValue<int>("Telemetry:FlushBudgetMilliseconds");
             var reserve = configuration.GetValue<int>("Telemetry:ResponseReserveMilliseconds");
             if (flush is < 1 or > 500 || reserve is < 500 or > 1000
@@ -90,7 +96,8 @@ public sealed class TelemetrySettings
                 Endpoint = endpoint, Environment = environment,
                 ExportTimeoutMilliseconds = configuration.GetValue<int>("OTEL_EXPORTER_OTLP_TIMEOUT"),
                 Version = ReadVersion(typeof(FunctionHandler).Assembly),
-                FlushBudgetMilliseconds = flush, ResponseReserveMilliseconds = reserve, Collection = collection
+                FlushBudgetMilliseconds = flush, ResponseReserveMilliseconds = reserve, Collection = collection,
+                InboundFormats = inboundFormats
             };
         }
         catch (Exception)

@@ -5,7 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using OpenTelemetry;
-using OpenTelemetry.Context.Propagation;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Instrumentation.AWSLambda;
 using OpenTelemetry.Logs;
@@ -23,6 +22,7 @@ public sealed class LambdaObservability : IDisposable
     private readonly TelemetrySettings settings;
     private readonly TelemetryExceptionRecorder exceptionRecorder;
     private readonly TracerProvider traces;
+    private readonly LambdaTracePropagator propagator;
     private readonly MeterProvider metrics;
     private readonly LoggerProvider logs;
     private readonly ILogger logger;
@@ -36,6 +36,7 @@ public sealed class LambdaObservability : IDisposable
         this.settings = settings;
 
         traces = services.GetRequiredService<TracerProvider>();
+        propagator = services.GetRequiredService<LambdaTracePropagator>();
         metrics = services.GetRequiredService<MeterProvider>();
         logs = services.GetRequiredService<LoggerProvider>();
         logger = services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(FunctionHandler).FullName!);
@@ -71,9 +72,11 @@ public sealed class LambdaObservability : IDisposable
         if (settings is null)
             return null;
 
-        Sdk.SetDefaultTextMapPropagator(new TraceContextPropagator());
+        var propagator = new LambdaTracePropagator(settings.InboundFormats);
+        Sdk.SetDefaultTextMapPropagator(propagator);
         var services = new ServiceCollection();
         services.AddSingleton(configuration);
+        services.AddSingleton(propagator);
 
         services.AddLogging(logging =>
         {
@@ -146,13 +149,14 @@ public sealed class LambdaObservability : IDisposable
     public async Task<APIGatewayProxyResponse> InvokeAsync(APIGatewayProxyRequest request, ILambdaContext context,
         Func<APIGatewayProxyRequest, ILambdaContext, Task<APIGatewayProxyResponse>> handler)
     {
-        // Extract only W3C trace context. Do not propagate baggage or trace state.
-        var propagation = new TraceContextPropagator().Extract(default, request, static (input, key) =>
-            input.Headers?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
-                .Select(header => header.Value) ?? []);
-        var parent = propagation.ActivityContext;
-        if (parent != default)
-            parent = new ActivityContext(parent.TraceId, parent.SpanId, parent.TraceFlags, isRemote: true);
+        var parent = propagator.Extract(default, request, static (input, key) =>
+        {
+            var multiValue = input.MultiValueHeaders?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (multiValue is { Length: > 0 })
+                return multiValue.SelectMany(header => header.Value ?? []);
+            return input.Headers?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+                .Select(header => header.Value) ?? [];
+        }).ActivityContext;
 
         // Null disables only the wrapper's implicit, unbounded ForceFlush.
         var response = await AWSLambdaWrapper.TraceAsync(null, handler, request, context, parent);
