@@ -1,6 +1,9 @@
 {
   "Telemetry": {
     "Enabled": false,
+    "Propagation": {
+      "InboundFormats": [ "xray", "tracecontext" ]
+    },
     "FlushBudgetMilliseconds": 500,
     "ResponseReserveMilliseconds": 500,
     "Collection": {

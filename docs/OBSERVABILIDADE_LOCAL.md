@@ -14,6 +14,7 @@ A Function produz traces, métricas e logs OTLP somente com ativação explícit
 | `AWS_REGION` | `us-east-1` |
 | `OTEL_SERVICE_NAME` | `mecanica-auth` |
 | `OTEL_RESOURCE_ATTRIBUTES` | Somente `service.name`, `service.version` e `deployment.environment.name` técnicos |
+| Telemetry:Propagation:InboundFormats | Ordem dos formatos conhecidos xray e tracecontext, preenchida e sem repetições; padrão [xray, tracecontext] |
 | `Metrics__EnabledMetrics__Mecanica.Auth` | `true`; não cria instrumentos quando desabilitado |
 
 A versão padrão vem do commit nos metadados do assembly; sem commit, é `local`. Ambiente não define uma alternativa local de banco/JWT. A configuração real da autenticação continua exigindo SSM/Secrets Manager e rede para o RDS privado. Nos testes, o bootstrap é injetado e não acessa a AWS.
@@ -23,7 +24,7 @@ Listas de atributos, mensagens fixas, filtros de logs, dimensões, limites do hi
 ## Sinais
 
 - Um span por invocação, incluindo parsing e inicialização tardia. Nome padrão `POST /customers/validate`, independente do caminho recebido. Consultas e abertura de conexão Npgsql ficam relacionadas à invocação.
-- Contexto W3C, inclusive pai não amostrado. Todas as invocações são capturadas; baggage, tracestate e extração do contexto X-Ray permanecem desabilitados.
+- Contexto selecionado pelo manifesto: X-Ray do runtime → X-Ray do evento → W3C → novo trace. Todas as invocações são capturadas, inclusive com pai não amostrado; baggage/tracestate são descartados. A extração implícita X-Ray do wrapper permanece desabilitada porque a seleção é explícita.
 - `mecanica.auth.invocations`: uma contagem por invocação concluída.
 - `mecanica.auth.invocation.duration`: segundos de processamento, incluindo inicialização quando ocorrer, antes do flush.
 - Dimensões: `outcome` e `http.response.status_code`. Categorias: `invalid-request`, `invalid-document`, `not-eligible`, `authenticated`, `timeout`, `technical-failure`. 400/401 não são falhas técnicas.
@@ -94,3 +95,44 @@ Não há testes de conexão com Collector local ou New Relic. Primeira chamada i
 **Validação após remoção dos testes de Collectors/New Relic — 15/10/2026:** build Release e 275 testes restantes aprovados, zero falhas/ignorados. Actionlint/ShellCheck aprovados nos dois CIs alterados. Evidências locais em artifacts/collector-tests-removal. Nenhum teste novo de conexão, Collector iniciado, workflow remoto ou operação AWS nesta validação; Docker utilizado somente pelos testes PostgreSQL preservados.
 
 **Validação após remoção de todos os testes de telemetria da Lambda — 15/10/2026:** restore e build Release concluídos; 217 testes funcionais restantes aprovados (21 Application, 10 Contract, 49 Function e 137 Infrastructure), zero falhas e zero ignorados. Conferência dos quatro projetos de teste sem referências de instrumentação OpenTelemetry, exporters InMemory ou auxiliares de flush. Evidências locais em `artifacts/lambda-telemetry-tests-removal`. Instrumentação de produção preservada; nenhuma operação AWS ou execução remota.
+
+## Correlação Gateway → Lambda
+
+**Preparada e conferida localmente em 18/10/2026.** LambdaTracePropagator usa AWSXRayPropagator e TraceContextPropagator oficiais; não interpreta Root/Parent nem converte IDs manualmente. OpenTelemetry.Extensions.AWS 1.19.1 passa a referência explícita, sem mudar as demais versões.
+
+~~~json
+"Propagation": {
+  "InboundFormats": [ "xray", "tracecontext" ]
+}
+~~~
+
+Essa seção pertence a Telemetry no JSON versionado. Com telemetria habilitada, lista ausente, vazia, repetida, escalar ou com formato desconhecido impede inicialização com **Configuração de telemetria inválida.**, sem reproduzir valores. Desabilitada, a composição não valida a lista nem altera o propagador global. A ordem é declarativa; dentro de xray, o contexto do runtime precede o evento.
+
+A cada invocação, o propagador consulta diretamente _X_AMZN_TRACE_ID. A AWS atualiza essa variável entre invocações; ela não pertence aos settings, campos estáticos, SAM ou opções próprias. Se estiver ausente/inválida, tenta X-Amzn-Trace-Id do evento e depois traceparent, conforme o manifesto. Cabeçalhos são procurados sem distinção de maiúsculas. Uma chave presente em MultiValueHeaders usa exclusivamente essa representação; somente se ausente usa Headers, sem concatenar as duas. Valores múltiplos, ambíguos ou malformados seguem a validação das bibliotecas oficiais.
+
+LambdaObservability.InvokeAsync passa explicitamente o contexto selecionado ao wrapper. DisableAwsXRayContextExtraction=true evita outra precedência implícita. TraceAsync(null, ...) continua desabilitando apenas o flush ilimitado do wrapper; os providers reais são reutilizados. Sem contexto válido, o wrapper cria nova raiz. Saída injeta somente traceparent W3C; baggage/tracestate são descartados antes de devolver/injetar contexto. Não são registrados cabeçalhos nem erros de parsing.
+
+AlwaysOnSampler preserva OTLP inclusive com Sampled=0 ou W3C não amostrado. Não modifica amostragem nativa AWS nem acrescenta exportação X-Ray. Spans PostgreSQL continuam filhos da invocação e logs usam seu TraceId/SpanId. HTTP/JWT, sanitização, configuração AWS, timeouts e orçamento compartilhado de flush de 500 ms permanecem iguais.
+
+### Conferência manual local
+
+Usado o Collector local existente com debug detalhado e PostgreSQL 16.15 descartável. O handler foi chamado em memória com execução injetada e consulta PostgreSQL real; não foi usado bootstrap AWS. O caso 200 usa resultado/token fictício apenas para conferir o transporte HTTP; assinatura/emissão JWT reais continuam cobertas pelos testes funcionais existentes. Não foram criados testes automatizados de telemetria, exporters fictícios, scripts ou executável permanente.
+
+Conferidos:
+
+- Runtime/evento diferentes, troca/remoção do runtime entre chamadas e fallback por contexto inválido.
+- X-Ray/W3C isolados, ambos inválidos, ausência de contexto, cabeçalhos com caixa variada e representação multivalorada prioritária/ambígua.
+- Pais não amostrados com exportação OTLP, ausência de baggage/tracestate, injeção somente W3C e duas chamadas concorrentes com runtime ausente, sem mutação global em paralelo.
+- Respostas 200/400/401/500 e cancelamento técnico; parsing inválido e prazo insuficiente não executaram autenticação. No-store, Base64 falso e token como string JSON preservados.
+- 21 invocações, 21 spans de entrada com nome fixo e 21 logs correlacionados. 32 spans PostgreSQL, incluindo abertura/consulta, ligados aos pais corretos; nenhum marcador fictício sensível, documento, SQL, senha, token ou stack trace no payload do Collector.
+- Cinco variantes inválidas de configuração com mensagem fixa; telemetria desabilitada preservando o propagador global mesmo com formato inválido. Mesma instância de handler/providers em todas as chamadas; flush com pouco tempo não aguardou exportação.
+
+Restore/build Release sem avisos/erros, **217 testes existentes aprovados, zero falhas/ignorados** (21 Application, 10 Contract, 49 Function e 137 Infrastructure, incluindo PostgreSQL/Testcontainers), publish linux-x64 sem self-contained e SAM validate/build aprovados. Certificado RDS, JSON/YAML, dependências/runtimeconfig e layout do ZIP conferidos, sem exporter de teste. OpenAPI SHA-256 31193F934FCBA6A66AB64129D7E039188F22F3C936A888EF5C43CE6ABEBE3995, idêntico ao anterior. Evidências locais ignoradas em artifacts/gateway-lambda-correlation; containers temporários removidos ao concluir.
+
+### Limites e próxima validação
+
+A conferência comprova propagação no handler local, não atualização real da variável pelo runtime gerenciado, ciclo/congelamento da extensão ou união dos segmentos no New Relic. Nenhum deploy, workflow remoto, operação AWS ou mudança em API, Gateway, IAM, SAM, workflows ou Collectors nesta entrega.
+
+Após os PRs: api-deploy da API atualizada → auth-publish/auth-provision desta revisão → gateway-provision consumindo a nova versão numérica da função. Executar também base-provision para a coleta CloudWatch preparada, se ainda pendente; ele não é exigido pelo propagador. Na conferência AWS, verificar chegada do contexto na API, contexto nativo da Lambda, pais/IDs e logs/SQL correlacionados, amostragem independente, atraso do polling e ausência de duplicação. E5.14 permanece parcial até comprovar os dois caminhos. Dashboards/alertas permanecem separados.
+
+Referências: [variáveis reservadas da Lambda](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html) e [propagador AWS oficial da versão utilizada](https://github.com/open-telemetry/opentelemetry-dotnet-contrib/blob/53a7ac3288a03f988f06224adfad3f5702e4a6fb/src/OpenTelemetry.Extensions.AWS/Trace/AWSXRayPropagator.cs).
