@@ -1,3 +1,4 @@
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using NSubstitute;
@@ -33,6 +34,34 @@ public class PostgreSqlCustomerLookupTests
     private NpgsqlConnectionStringBuilder authenticationSettings = null!;
     private PostgreSqlCustomerLookup lookup = null!;
     private readonly string applicationName = "part3-auth-" + Guid.NewGuid().ToString("N");
+
+    [Test]
+    public async Task AbsentCustomerCountsASuccessfulConnectionAndQuery()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var instrumented = new PostgreSqlCustomerLookup(authentication, metrics);
+
+        var customer = await instrumented.FindByDocumentAsync("00000000000", CancellationToken.None);
+
+        Assert.That(customer, Is.Null);
+        Assert.That(listener.Measurements.Select(point => point["operation"]), Is.EqualTo(new[] { "connection.open", "command.execute" }));
+        Assert.That(listener.Measurements.All(point => Equals(point["outcome"], "success")), Is.True);
+    }
+
+    [Test]
+    public async Task InvalidPersistedCustomerDoesNotTurnTheQueryIntoADatabaseFailure()
+    {
+        await ExecuteAdminAsync("UPDATE customers SET status = 'Unknown' WHERE id = @CpfId", new { CpfId });
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var instrumented = new PostgreSqlCustomerLookup(authentication, metrics);
+
+        Assert.ThrowsAsync<InvalidDataException>(() => instrumented.FindByDocumentAsync(Cpf, CancellationToken.None));
+
+        Assert.That(listener.Measurements.Count, Is.EqualTo(2));
+        Assert.That(listener.Measurements.All(point => Equals(point["outcome"], "success")), Is.True);
+    }
 
     [OneTimeSetUp]
     public async Task StartDatabase()

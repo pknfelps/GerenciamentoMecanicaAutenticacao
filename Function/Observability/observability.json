@@ -1,6 +1,7 @@
 {
   "Telemetry": {
     "Enabled": false,
+    "IntegrationMetricAttributes": [ "integration", "operation", "purpose", "outcome" ],
     "Propagation": {
       "InboundFormats": [ "xray", "tracecontext" ]
     },
@@ -66,7 +67,8 @@
   },
   "Metrics": {
     "EnabledMetrics": {
-      "Mecanica.Auth": true
+      "Mecanica.Auth": true,
+      "Mecanica.Integrations": true
     }
   },
   "OTEL_SERVICE_NAME": "mecanica-auth",

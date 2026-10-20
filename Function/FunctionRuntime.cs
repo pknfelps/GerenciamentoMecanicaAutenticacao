@@ -1,3 +1,4 @@
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using GerenciamentoMecanica.Autenticacao.Application.Authentication;
 using GerenciamentoMecanica.Autenticacao.Infrastructure.Authentication;
 using GerenciamentoMecanica.Autenticacao.Infrastructure.Documents;
@@ -13,7 +14,11 @@ public sealed class FunctionRuntime : IDisposable, IAsyncDisposable
     public NpgsqlDataSource Database { get; }
     public ValidateCustomerDocumentUseCase Authentication { get; }
     
-    public FunctionRuntime(RuntimeConfiguration configuration)
+    public FunctionRuntime(RuntimeConfiguration configuration) : this(configuration, null)
+    {
+    }
+
+    public FunctionRuntime(RuntimeConfiguration configuration, IntegrationMetrics? metrics)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         
@@ -21,7 +26,7 @@ public sealed class FunctionRuntime : IDisposable, IAsyncDisposable
         Database = configuration.Database.CreateDataSource();
         
         Authentication = new ValidateCustomerDocumentUseCase(
-            new CustomerDocumentNormalizer(), new PostgreSqlCustomerLookup(Database),
+            new CustomerDocumentNormalizer(), new PostgreSqlCustomerLookup(Database, metrics),
             new CustomerTokenIssuer(Jwt));
     }
 

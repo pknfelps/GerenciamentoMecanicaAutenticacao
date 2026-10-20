@@ -1,3 +1,4 @@
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using Amazon;
@@ -15,6 +16,7 @@ using System.Text.Json;
 
 namespace GerenciamentoMecanica.Autenticacao.InfrastructureTests;
 
+[NonParallelizable]
 public class RuntimeConfigurationTests
 {
     private const string FakeKey = "test-only-signing-key-at-least-32-characters";
@@ -103,6 +105,88 @@ public class RuntimeConfigurationTests
             Assert.That(error.ToString(), Does.Not.Contain(FakeKey));
             Assert.That(error.ToString(), Does.Not.Contain("old_database"));
         });
+    }
+
+    [Test]
+    public async Task SuccessfulBootstrapCountsOneParametersCallAndTwoSecrets()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var loader = new AwsRuntimeConfigurationLoader(parameters, secrets, metrics);
+
+        await loader.LoadAsync(RuntimeEnvironment.Parse("hom", "us-east-1"), certificate);
+
+        Assert.That(listener.Measurements.Select(point => point["integration"]),
+            Is.EqualTo(new[] { "ssm", "secretsmanager", "secretsmanager" }));
+        Assert.That(listener.Measurements.All(point => Equals(point["outcome"], "success")), Is.True);
+    }
+
+    [Test]
+    public void IncompleteParametersDoNotCountAsAnSdkTransportFailure()
+    {
+        response.Parameters.Clear();
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var loader = new AwsRuntimeConfigurationLoader(parameters, secrets, metrics);
+
+        Assert.ThrowsAsync<InvalidOperationException>(() => loader.LoadAsync(
+            RuntimeEnvironment.Parse("hom", "us-east-1"), certificate));
+
+        Assert.That(listener.Measurements.Single()["outcome"], Is.EqualTo("success"));
+    }
+
+    [Test]
+    public void SecretTimeoutIsMeasuredBeforeTheExceptionIsSanitized()
+    {
+        secrets.GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<GetSecretValueResponse>(new TimeoutException("private-sdk-value")));
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var loader = new AwsRuntimeConfigurationLoader(parameters, secrets, metrics);
+
+        var error = Assert.ThrowsAsync<InvalidOperationException>(() => loader.LoadAsync(
+            RuntimeEnvironment.Parse("hom", "us-east-1"), certificate));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(listener.Measurements.Select(point => point["outcome"]), Is.EqualTo(new[] { "success", "timeout" }));
+            Assert.That(error!.Message, Does.Not.Contain("private-sdk-value"));
+        });
+    }
+
+    [Test]
+    public async Task ReusedRuntimeDoesNotRepeatBootstrapMetrics()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var bootstrap = new FunctionBootstrap(key => key == "Runtime__Environment" ? "hom" : "us-east-1",
+            _ => parameters, _ => secrets, metrics);
+        await using var runtime = new FunctionRuntimeProvider(bootstrap.InitializeAsync);
+
+        await runtime.ExecuteAsync("invalid-document", CancellationToken.None);
+        await runtime.ExecuteAsync("invalid-document", CancellationToken.None);
+
+        Assert.That(listener.Measurements.Count, Is.EqualTo(3));
+    }
+
+    [Test]
+    public async Task FailedInitializationCanRetryWithoutDuplicatingTheSuccessfulRuntime()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var bootstrap = new FunctionBootstrap(key => key == "Runtime__Environment" ? "hom" : "us-east-1",
+            _ => parameters, _ => secrets, metrics);
+        await using var runtime = new FunctionRuntimeProvider(bootstrap.InitializeAsync);
+        parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<GetParametersResponse>(new InvalidOperationException("private-error")));
+        Assert.ThrowsAsync<InvalidOperationException>(() => runtime.ExecuteAsync("invalid-document", CancellationToken.None));
+        parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(response));
+
+        await runtime.ExecuteAsync("invalid-document", CancellationToken.None);
+        await runtime.ExecuteAsync("invalid-document", CancellationToken.None);
+
+        Assert.That(listener.Measurements.Select(point => point["outcome"]), Is.EqualTo(new[] { "failure", "success", "success", "success" }));
     }
 
     [TestCase("hom")]
