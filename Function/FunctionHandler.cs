@@ -15,7 +15,12 @@ public sealed class FunctionHandler : IDisposable, IAsyncDisposable
     private readonly LambdaObservability? observability;
     private readonly Func<string?, CancellationToken, Task<CustomerAuthenticationResult>> execute;
 
-    public FunctionHandler() : this(new FunctionRuntimeProvider(new FunctionBootstrap().InitializeAsync), LambdaObservability.CreateDefault())
+    public FunctionHandler() : this(LambdaObservability.CreateDefault())
+    {
+    }
+
+    private FunctionHandler(LambdaObservability? observability) : this(
+        new FunctionRuntimeProvider(new FunctionBootstrap(observability?.Integrations).InitializeAsync), observability)
     {
     }
 

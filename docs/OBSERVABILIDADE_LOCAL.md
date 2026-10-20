@@ -136,3 +136,9 @@ A conferência comprova propagação no handler local, não atualização real d
 Após os PRs: api-deploy da API atualizada → auth-publish/auth-provision desta revisão → gateway-provision consumindo a nova versão numérica da função. Executar também base-provision para a coleta CloudWatch preparada, se ainda pendente; ele não é exigido pelo propagador. Na conferência AWS, verificar chegada do contexto na API, contexto nativo da Lambda, pais/IDs e logs/SQL correlacionados, amostragem independente, atraso do polling e ausência de duplicação. E5.14 permanece parcial até comprovar os dois caminhos. Dashboards/alertas permanecem separados.
 
 Referências: [variáveis reservadas da Lambda](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html) e [propagador AWS oficial da versão utilizada](https://github.com/open-telemetry/opentelemetry-dotnet-contrib/blob/53a7ac3288a03f988f06224adfad3f5702e4a6fb/src/OpenTelemetry.Extensions.AWS/Trace/AWSXRayPropagator.cs).
+
+## E5 — Métricas dos acessos às integrações
+
+O bootstrap e o lookup PostgreSQL recebem o componente Mecanica.Integrations da observabilidade existente. São acessos concluídos, não invocações HTTP. Provider, orçamento compartilhado de flush e sanitização permanecem preservados. Consulte [regras e validação](METRICAS_INTEGRACOES.md). Comprovação implantada dos novos sinais permanece pendente.
+
+**19/10/2026 — Métricas das integrações, regressão concluída:** suíte completa com Docker Linux, sem filtros: 1.187 testes API e 245 testes Lambda, zero falhas/ignorados. Cenários PostgreSQL novos e existentes aprovados. Implementação e validação local concluídas; publicação e comprovação dos novos sinais no New Relic permanecem pendentes. Evidências em artifacts/e5-integrations/full-tests e regras em METRICAS_INTEGRACOES.md.

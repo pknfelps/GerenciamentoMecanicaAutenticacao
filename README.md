@@ -241,3 +241,7 @@ X-Ray fica permanentemente habilitado no SAM com Tracing: Active, assim como Ope
 ## Bloqueios no auth-destroy — 17/10/2026
 
 Antes de sam delete, o workflow exige ausência da REST API e do VPC Link mecanica-<ambiente>-gateway. Depois da remoção SAM, exige ausência de ENIs e regras de saída do SG reservado auth; o SG pertence à base e pode permanecer. Dependência presente ou consulta inválida/negada encerra com erro. Não há espera automática: aguardar a limpeza e repetir. Publicar primeiro as permissões adicionais do bootstrap. Sem novos inputs, workflows ou operações AWS nesta implementação. [Procedimento](docs/DEPLOY.md).
+
+## E5 — Métricas dos acessos às integrações
+
+O bootstrap e o lookup PostgreSQL recebem o componente Mecanica.Integrations da observabilidade existente. São acessos concluídos, não invocações HTTP. Provider, orçamento compartilhado de flush e sanitização permanecem preservados. Consulte [regras e validação](docs/METRICAS_INTEGRACOES.md). Comprovação implantada dos novos sinais permanece pendente.

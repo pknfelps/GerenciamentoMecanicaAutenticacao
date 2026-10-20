@@ -11,6 +11,7 @@ public sealed class TelemetrySettings
     public int ExportTimeoutMilliseconds { get; private init; }
     public int FlushBudgetMilliseconds { get; private init; }
     public int ResponseReserveMilliseconds { get; private init; }
+    public string[] IntegrationMetricAttributes { get; private init; } = [];
     public string[] InboundFormats { get; private init; } = [];
     public TelemetryCollectionOptions Collection { get; private init; } = null!;
 
@@ -60,6 +61,9 @@ public sealed class TelemetrySettings
         {
             var collection = configuration.GetSection("Telemetry:Collection").Get<TelemetryCollectionOptions>() ?? throw Invalid();
             collection.Validate();
+            var attributes = configuration.GetSection("Telemetry:IntegrationMetricAttributes").Get<string[]>() ?? [];
+            if (attributes.Length != 4 || !attributes.Order().SequenceEqual(new[] { "integration", "operation", "outcome", "purpose" }))
+                throw Invalid();
             var inboundFormats = configuration.GetSection("Telemetry:Propagation:InboundFormats").Get<string[]>() ?? [];
             if (inboundFormats.Length == 0
                 || inboundFormats.Any(format => format is not ("xray" or "tracecontext"))
@@ -93,6 +97,7 @@ public sealed class TelemetrySettings
 
             return new()
             {
+                IntegrationMetricAttributes = attributes,
                 Endpoint = endpoint, Environment = environment,
                 ExportTimeoutMilliseconds = configuration.GetValue<int>("OTEL_EXPORTER_OTLP_TIMEOUT"),
                 Version = ReadVersion(typeof(FunctionHandler).Assembly),

@@ -1,3 +1,4 @@
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using Microsoft.Extensions.Configuration;
@@ -27,6 +28,7 @@ public sealed class LambdaObservability : IDisposable
     private readonly LoggerProvider logs;
     private readonly ILogger logger;
     private readonly InvocationMetrics? invocations;
+    public IntegrationMetrics? Integrations { get; }
     private IDisposable? ownedConfiguration;
     private int disposed;
 
@@ -41,6 +43,7 @@ public sealed class LambdaObservability : IDisposable
         logs = services.GetRequiredService<LoggerProvider>();
         logger = services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(FunctionHandler).FullName!);
         invocations = services.GetService<InvocationMetrics>();
+        Integrations = services.GetService<IntegrationMetrics>();
         exceptionRecorder = new TelemetryExceptionRecorder(settings.Collection);
     }
 
@@ -88,6 +91,9 @@ public sealed class LambdaObservability : IDisposable
                 configureLogs?.Invoke(options);
             });
         });
+        var integrationsEnabled = configuration.GetValue<bool>($"Metrics:EnabledMetrics:{IntegrationMetrics.MeterName}");
+        if (integrationsEnabled)
+            services.AddSingleton<IntegrationMetrics>();
         var meterEnabled = configuration.GetValue<bool>($"Metrics:EnabledMetrics:{InvocationMetrics.MeterName}");
         if (meterEnabled)
         {
@@ -120,6 +126,10 @@ public sealed class LambdaObservability : IDisposable
                             TagKeys = settings.Collection.MetricAttributes,
                             Boundaries = settings.Collection.DurationBoundariesSeconds
                         });
+                if (integrationsEnabled)
+                    metric.AddMeter(IntegrationMetrics.MeterName)
+                        .AddView(IntegrationMetrics.InstrumentName, new MetricStreamConfiguration
+                        { TagKeys = settings.IntegrationMetricAttributes });
                 configureMetrics?.Invoke(metric);
             })
             .UseOtlpExporter(OtlpExportProtocol.HttpProtobuf, settings.Endpoint);
