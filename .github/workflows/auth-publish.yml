@@ -132,48 +132,102 @@ jobs:
             --s3-prefix "sam/auth/$TARGET_ENVIRONMENT/$GITHUB_SHA" \
             --output-template-file "artifacts/bundle/sam-$TARGET_ENVIRONMENT.json" --use-json
           cp contracts/openapi.json artifacts/bundle/openapi.json
-          for file in "sam-$TARGET_ENVIRONMENT.json" openapi.json; do
-            sha256sum "artifacts/bundle/$file" | cut -d ' ' -f 1 > "artifacts/bundle/$file.sha256"
-          done
-      - name: Record uploaded ZIP metadata
+      - name: Pin and publish immutable SAM template
         run: |
-          code_uri="$(jq -er '.Resources.AuthFunction.Properties.CodeUri | select(type == "string")' "artifacts/bundle/sam-$TARGET_ENVIRONMENT.json")"
+          set -euo pipefail
+          template="artifacts/bundle/sam-$TARGET_ENVIRONMENT.json"
+          bucket=mecanica-artifacts-121754142617-us-east-1
+          code_uri="$(jq -er '.Resources.AuthFunction.Properties.CodeUri | select(type == "string")' "$template")"
           prefix="s3://mecanica-artifacts-121754142617-us-east-1/"
           case "$code_uri" in
             "$prefix"*) zip_key="${code_uri#"$prefix"}" ;;
             *) echo "::error::CodeUri points to an unexpected bucket"; exit 1 ;;
           esac
           case "$zip_key" in "sam/auth/$TARGET_ENVIRONMENT/$GITHUB_SHA/"*) ;; *) exit 1 ;; esac
-          version="$(aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
+          version="$(aws s3api get-object --bucket "$bucket" \
             --expected-bucket-owner 121754142617 --key "$zip_key" \
             --query VersionId --output text "$RUNNER_TEMP/function.zip")"
+          [[ -n "$version" && "$version" != null && "$version" != None ]] || {
+            echo '::error::The Lambda ZIP must have an S3 VersionId.'
+            exit 1
+          }
+          test -s "$RUNNER_TEMP/function.zip"
+          jq --arg bucket "$bucket" --arg key "$zip_key" --arg version "$version" '
+            .Resources.AuthFunction.Properties.CodeUri = {Bucket: $bucket, Key: $key, Version: $version}
+          ' "$template" > "$RUNNER_TEMP/versioned-sam.json"
+          mv "$RUNNER_TEMP/versioned-sam.json" "$template"
+
+          # An identical republication must retain the version in the immutable template.
+          template_key="contracts/auth/$GITHUB_SHA/sam-$TARGET_ENVIRONMENT.json"
+          if template_version="$(aws s3api put-object --bucket "$bucket" \
+            --expected-bucket-owner 121754142617 --key "$template_key" --body "$template" \
+            --if-none-match '*' --checksum-algorithm SHA256 \
+            --metadata "commit=$GITHUB_SHA,repository=$GITHUB_REPOSITORY" \
+            --query VersionId --output text 2> "$RUNNER_TEMP/upload.err")"; then
+            echo "Published $template_key"
+          elif grep -q '(PreconditionFailed)' "$RUNNER_TEMP/upload.err"; then
+            template_version="$(aws s3api get-object --bucket "$bucket" --expected-bucket-owner 121754142617 \
+              --key "$template_key" --query VersionId --output text "$RUNNER_TEMP/published-sam.json")"
+            jq -e --arg bucket "$bucket" --arg key "$zip_key" '
+              .Resources.AuthFunction.Properties.CodeUri |
+              type == "object" and .Bucket == $bucket and .Key == $key and
+              (.Version | type == "string" and length > 0 and . != "null" and . != "None")
+            ' "$RUNNER_TEMP/published-sam.json" > /dev/null || {
+              echo '::error::The published template must pin the ZIP version. Publish a new commit.'
+              exit 1
+            }
+            published_version="$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Version' "$RUNNER_TEMP/published-sam.json")"
+            aws s3api get-object --bucket "$bucket" --expected-bucket-owner 121754142617 \
+              --key "$zip_key" --version-id "$published_version" \
+              "$RUNNER_TEMP/published-function.zip" > /dev/null
+            cmp "$RUNNER_TEMP/function.zip" "$RUNNER_TEMP/published-function.zip" || {
+              echo '::error::The ZIP differs from the published revision. Publish a new commit.'
+              exit 1
+            }
+            version="$published_version"
+            jq --arg version "$version" '.Resources.AuthFunction.Properties.CodeUri.Version = $version' \
+              "$template" > "$RUNNER_TEMP/versioned-sam.json"
+            mv "$RUNNER_TEMP/versioned-sam.json" "$template"
+            cmp "$template" "$RUNNER_TEMP/published-sam.json" || {
+              echo "::error::Immutable artifact differs: $template_key"
+              exit 1
+            }
+            echo "Identical artifact already exists: $template_key"
+          else
+            cat "$RUNNER_TEMP/upload.err" >&2
+            exit 1
+          fi
+
+          for file in "sam-$TARGET_ENVIRONMENT.json" openapi.json; do
+            sha256sum "artifacts/bundle/$file" | cut -d ' ' -f 1 > "artifacts/bundle/$file.sha256"
+          done
           {
             echo "Commit do codigo e template: $GITHUB_SHA"
             echo "- $zip_key; SHA-256: $(sha256sum "$RUNNER_TEMP/function.zip" | cut -d ' ' -f 1); S3 version: $version"
+            echo "- $template_key; SHA-256: $(cat "$template.sha256"); S3 version: $template_version"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Publish immutable SAM template and checksum
+      - name: Publish immutable SAM checksum
         working-directory: artifacts/bundle
         run: |
-          for file in "sam-$TARGET_ENVIRONMENT.json" "sam-$TARGET_ENVIRONMENT.json.sha256"; do
-            key="contracts/auth/$GITHUB_SHA/$file"
-            if version="$(aws s3api put-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-              --expected-bucket-owner 121754142617 --key "$key" --body "$file" \
-              --if-none-match '*' --checksum-algorithm SHA256 \
-              --metadata "commit=$GITHUB_SHA,repository=$GITHUB_REPOSITORY" \
-              --query VersionId --output text 2> "$RUNNER_TEMP/upload.err")"; then
-              echo "Published $key"
-            elif grep -q '(PreconditionFailed)' "$RUNNER_TEMP/upload.err"; then
-              version="$(aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-                --expected-bucket-owner 121754142617 --key "$key" \
-                --query VersionId --output text "$RUNNER_TEMP/existing")"
-              cmp "$file" "$RUNNER_TEMP/existing" || { echo "::error::Immutable artifact differs: $key"; exit 1; }
-              echo "Identical artifact already exists: $key"
-            else
-              cat "$RUNNER_TEMP/upload.err" >&2
-              exit 1
-            fi
-            echo "- $key; SHA-256: $(sha256sum "$file" | cut -d ' ' -f 1); S3 version: $version" >> "$GITHUB_STEP_SUMMARY"
-          done
+          file="sam-$TARGET_ENVIRONMENT.json.sha256"
+          key="contracts/auth/$GITHUB_SHA/$file"
+          if version="$(aws s3api put-object --bucket mecanica-artifacts-121754142617-us-east-1 \
+            --expected-bucket-owner 121754142617 --key "$key" --body "$file" \
+            --if-none-match '*' --checksum-algorithm SHA256 \
+            --metadata "commit=$GITHUB_SHA,repository=$GITHUB_REPOSITORY" \
+            --query VersionId --output text 2> "$RUNNER_TEMP/upload.err")"; then
+            echo "Published $key"
+          elif grep -q '(PreconditionFailed)' "$RUNNER_TEMP/upload.err"; then
+            version="$(aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
+              --expected-bucket-owner 121754142617 --key "$key" \
+              --query VersionId --output text "$RUNNER_TEMP/existing")"
+            cmp "$file" "$RUNNER_TEMP/existing" || { echo "::error::Immutable artifact differs: $key"; exit 1; }
+            echo "Identical artifact already exists: $key"
+          else
+            cat "$RUNNER_TEMP/upload.err" >&2
+            exit 1
+          fi
+          echo "- $key; SHA-256: $(sha256sum "$file" | cut -d ' ' -f 1); S3 version: $version" >> "$GITHUB_STEP_SUMMARY"
       - name: Publish immutable OpenAPI and checksum
         working-directory: artifacts/bundle
         run: |
