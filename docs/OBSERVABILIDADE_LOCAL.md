@@ -14,7 +14,7 @@ A Function produz traces, métricas e logs OTLP somente com ativação explícit
 | `AWS_REGION` | `us-east-1` |
 | `OTEL_SERVICE_NAME` | `mecanica-auth` |
 | `OTEL_RESOURCE_ATTRIBUTES` | Somente `service.name`, `service.version` e `deployment.environment.name` técnicos |
-| Telemetry:Propagation:InboundFormats | Ordem dos formatos conhecidos xray e tracecontext, preenchida e sem repetições; padrão [xray, tracecontext] |
+| Telemetry:Propagation:InboundFormats | Somente [tracecontext]; ausente, vazia, duplicada ou com outro formato (inclusive xray) impede inicialização quando habilitada |
 | `Metrics__EnabledMetrics__Mecanica.Auth` | `true`; não cria instrumentos quando desabilitado |
 
 A versão padrão vem do commit nos metadados do assembly; sem commit, é `local`. Ambiente não define uma alternativa local de banco/JWT. A configuração real da autenticação continua exigindo SSM/Secrets Manager e rede para o RDS privado. Nos testes, o bootstrap é injetado e não acessa a AWS.
@@ -24,7 +24,7 @@ Listas de atributos, mensagens fixas, filtros de logs, dimensões, limites do hi
 ## Sinais
 
 - Um span por invocação, incluindo parsing e inicialização tardia. Nome padrão `POST /customers/validate`, independente do caminho recebido. Consultas e abertura de conexão Npgsql ficam relacionadas à invocação.
-- Contexto selecionado pelo manifesto: X-Ray do runtime → X-Ray do evento → W3C → novo trace. Todas as invocações são capturadas, inclusive com pai não amostrado; baggage/tracestate são descartados. A extração implícita X-Ray do wrapper permanece desabilitada porque a seleção é explícita.
+- Contexto somente W3C: traceparent válido → pai recebido; ausente/inválido/ambíguo → novo trace da aplicação. X-Ray do runtime/evento não define o pai OTLP. Todas as invocações continuam capturadas, inclusive com pai W3C não amostrado; baggage/tracestate são descartados. A extração implícita X-Ray do wrapper permanece desabilitada.
 - `mecanica.auth.invocations`: uma contagem por invocação concluída.
 - `mecanica.auth.invocation.duration`: segundos de processamento, incluindo inicialização quando ocorrer, antes do flush.
 - Dimensões: `outcome` e `http.response.status_code`. Categorias: `invalid-request`, `invalid-document`, `not-eligible`, `authenticated`, `timeout`, `technical-failure`. 400/401 não são falhas técnicas.
@@ -96,7 +96,19 @@ Não há testes de conexão com Collector local ou New Relic. Primeira chamada i
 
 **Validação após remoção de todos os testes de telemetria da Lambda — 15/10/2026:** restore e build Release concluídos; 217 testes funcionais restantes aprovados (21 Application, 10 Contract, 49 Function e 137 Infrastructure), zero falhas e zero ignorados. Conferência dos quatro projetos de teste sem referências de instrumentação OpenTelemetry, exporters InMemory ou auxiliares de flush. Evidências locais em `artifacts/lambda-telemetry-tests-removal`. Instrumentação de produção preservada; nenhuma operação AWS ou execução remota.
 
-## Correlação Gateway → Lambda
+## Tracing W3C — decisão vigente de 20/10/2026
+
+O manifesto aceita exclusivamente `InboundFormats: ["tracecontext"]`. `LambdaTracePropagator` delega ao `TraceContextPropagator` oficial, sem parsing próprio; não lê `_X_AMZN_TRACE_ID` nem o cabeçalho `X-Amzn-Trace-Id`. Sem W3C válido, o wrapper inicia nova raiz da aplicação. A extração automática permanece desabilitada (`DisableAwsXRayContextExtraction=true`). A referência direta `OpenTelemetry.Extensions.AWS` foi retirada; o pacote permanece transitivo pela instrumentação AWSLambda, sem ativar esse mecanismo.
+
+Nomes de cabeçalho são comparados sem distinção de maiúsculas. `MultiValueHeaders` tem prioridade quando contém a chave, mesmo vazia/inválida/ambígua; `Headers` só é consultado se a chave estiver ausente. O adaptador não combina representações. Entrada/saída removem baggage/tracestate e injetam somente traceparent. Sem contexto anterior reaproveitado; PostgreSQL e logs continuam filhos/correlacionados à invocação, com sampler e orçamento compartilhado de flush preservados.
+
+O tracing principal continua OTLP direto pelo Collector. X-Ray nativo e polling permanecem como diagnóstico separado, sem árvore única com OTLP. O mantenedor retirou esse requisito do escopo após a fragmentação comprovada; não registrar a união como corrigida. Um pai W3C externo sem spans exportados ainda pode estar ausente no New Relic. Contratos HTTP/JWT, SAM, IAM, Collectors e workflows não mudam.
+
+Testes simples em FunctionTests/Observability verificam W3C válido/não amostrado, X-Ray/runtime ignorados, ausência/invalidade/ambiguidade, representações do evento, concorrência, descarte de metadados e configuração com mensagem fixa. Não usam exporters fictícios, AWS, banco ou Collector. Essa autorização é específica para os testes simples desta alteração; as antigas suítes de transporte continuam removidas. **Validação local concluída:** restore/build Release, 269 testes aprovados (24 novos de propagação/configuração), zero falhas/ignorados, incluindo PostgreSQL/Testcontainers; publish linux-x64 sem self-contained e SAM validate --lint/build aprovados. Certificado RDS, JSON/YAML e runtimeconfig conferidos no publish e no conteúdo empacotado pelo SAM, sem assembly de teste/exporter InMemory. A API teve 1.196 testes aprovados e conferência HTTP manual com Collector real: três raízes sem W3C, continuidade W3C e contexto não amostrado exportados. Evidências locais: artifacts/e5-w3c-only nos dois repositórios. A implantação/runtime gerenciado e a apresentação dos novos traces no New Relic continuam pendentes.
+
+Publicação: api-deploy → auth-publish/auth-provision → gateway-provision com a nova versão numérica. Remover eventuais overrides antigos com xray. Conferir novas raízes sem W3C, continuidade W3C e relações PostgreSQL/logs; não exigir união ao polling. E5.3/E5.14 não serão marcadas integralmente concluídas por essa mudança. [Decisão compartilhada](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/TRACING_W3C_E_XRAY.md).
+
+## Correlação Gateway → Lambda — histórico de 18/10/2026, substituído
 
 **Preparada e conferida localmente em 18/10/2026.** LambdaTracePropagator usa AWSXRayPropagator e TraceContextPropagator oficiais; não interpreta Root/Parent nem converte IDs manualmente. OpenTelemetry.Extensions.AWS 1.19.1 passa a referência explícita, sem mudar as demais versões.
 

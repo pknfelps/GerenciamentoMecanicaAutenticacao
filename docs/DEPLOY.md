@@ -126,3 +126,7 @@ auth-destroy autentica por OIDC e consulta as coleções REST API/VPC Link por n
 Não há espera periódica ou exclusão manual de interfaces: aguardar externamente e repetir auth-destroy. As consultas JSON usam paginação automática e falham diante de acesso negado, erro AWS ou parsing inválido. O resumo só confirma o descarte completo após a conferência da rede. Não interpretar a mensagem intermediária de recursos SAM removidos como conclusão da limpeza de rede.
 
 Aplicar o bootstrap revisado antes de utilizar o workflow. A cadeia permanece Gateway -> API/auth -> banco -> base; banco/base também consultam a função, ENIs e regras remanescentes. Preservados sam delete, ausência de aprovação intermediária, IAM persistente e tratamento de artefatos. Nenhum deploy/destroy executado nesta implementação.
+
+## Atualização de tracing W3C — 20/10/2026
+
+A aplicação aceita somente traceparent como pai OTLP; contexto X-Ray do runtime/evento não é utilizado. Publicar nova revisão, executar auth-provision e atualizar o Gateway para a versão numérica publicada. Remover overrides antigos de Telemetry:Propagation:InboundFormats contendo xray. Não alterar SAM, layer, IAM, Collectors, workflows ou Tracing: Active: X-Ray/polling continuam independentes. A validação posterior conferirá a árvore da aplicação e seus logs/SQL, sem exigir união automática aos segmentos nativos. A retirada da união do escopo não é comprovação de correção; [decisão vigente](OBSERVABILIDADE_LOCAL.md#tracing-w3c--decisão-vigente-de-20102026).
