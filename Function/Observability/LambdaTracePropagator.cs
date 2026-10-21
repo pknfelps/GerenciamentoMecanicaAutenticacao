@@ -1,52 +1,31 @@
+using Amazon.Lambda.APIGatewayEvents;
 using OpenTelemetry.Context.Propagation;
-using OpenTelemetry.Extensions.AWS.Trace;
 using System.Diagnostics;
 
 namespace GerenciamentoMecanica.Autenticacao.Function.Observability;
 
 public sealed class LambdaTracePropagator : TextMapPropagator
 {
-    private readonly string[] inboundFormats;
-    private readonly AWSXRayPropagator xray = new();
     private readonly TraceContextPropagator w3c = new();
-    private readonly HashSet<string> fields;
 
-    public LambdaTracePropagator(IEnumerable<string> inboundFormats)
+    public override ISet<string> Fields { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "traceparent" };
+
+    public PropagationContext Extract(APIGatewayProxyRequest request) => Extract(default, request, static (input, key) =>
     {
-        this.inboundFormats = inboundFormats.ToArray();
-        fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "traceparent" };
-        if (this.inboundFormats.Contains("xray"))
-            fields.UnionWith(xray.Fields);
-    }
-
-    public override ISet<string> Fields => fields;
+        var multiValue = input.MultiValueHeaders?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (multiValue is { Length: > 0 })
+            return multiValue.SelectMany(header => header.Value ?? []);
+        return input.Headers?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
+            .Select(header => header.Value) ?? [];
+    });
 
     public override PropagationContext Extract<T>(PropagationContext context, T carrier,
         Func<T, string, IEnumerable<string>?> getter)
     {
-        var extracted = WithoutMetadata(context.ActivityContext);
-        foreach (var format in inboundFormats)
-        {
-            if (format == "xray")
-            {
-                // The runtime changes this value per invocation; never read it from cached configuration.
-                var runtime = Environment.GetEnvironmentVariable("_X_AMZN_TRACE_ID");
-                if (!string.IsNullOrEmpty(runtime))
-                    extracted = xray.Extract(extracted, runtime, static (header, _) => [header]);
-                extracted = xray.Extract(extracted, carrier, getter);
-            }
-            else if (format == "tracecontext")
-            {
-                extracted = w3c.Extract(extracted, carrier,
-                    (input, name) => string.Equals(name, "tracestate", StringComparison.OrdinalIgnoreCase)
-                        ? []
-                        : getter(input, name));
-            }
-            else
-            {
-                throw new InvalidOperationException("Configuração de telemetria inválida.");
-            }
-        }
+        var extracted = w3c.Extract(WithoutMetadata(context.ActivityContext), carrier,
+            (input, name) => string.Equals(name, "tracestate", StringComparison.OrdinalIgnoreCase)
+                ? []
+                : getter(input, name));
         return WithoutMetadata(extracted.ActivityContext);
     }
 

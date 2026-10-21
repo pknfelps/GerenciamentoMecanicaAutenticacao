@@ -3,7 +3,7 @@
     "Enabled": false,
     "IntegrationMetricAttributes": [ "integration", "operation", "purpose", "outcome" ],
     "Propagation": {
-      "InboundFormats": [ "xray", "tracecontext" ]
+      "InboundFormats": [ "tracecontext" ]
     },
     "FlushBudgetMilliseconds": 500,
     "ResponseReserveMilliseconds": 500,

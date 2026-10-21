@@ -65,9 +65,7 @@ public sealed class TelemetrySettings
             if (attributes.Length != 4 || !attributes.Order().SequenceEqual(new[] { "integration", "operation", "outcome", "purpose" }))
                 throw Invalid();
             var inboundFormats = configuration.GetSection("Telemetry:Propagation:InboundFormats").Get<string[]>() ?? [];
-            if (inboundFormats.Length == 0
-                || inboundFormats.Any(format => format is not ("xray" or "tracecontext"))
-                || inboundFormats.Distinct(StringComparer.Ordinal).Count() != inboundFormats.Length)
+            if (inboundFormats.Length != 1 || inboundFormats[0] != "tracecontext")
                 throw Invalid();
             var flush = configuration.GetValue<int>("Telemetry:FlushBudgetMilliseconds");
             var reserve = configuration.GetValue<int>("Telemetry:ResponseReserveMilliseconds");

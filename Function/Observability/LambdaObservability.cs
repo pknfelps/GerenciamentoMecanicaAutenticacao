@@ -75,7 +75,7 @@ public sealed class LambdaObservability : IDisposable
         if (settings is null)
             return null;
 
-        var propagator = new LambdaTracePropagator(settings.InboundFormats);
+        var propagator = new LambdaTracePropagator();
         Sdk.SetDefaultTextMapPropagator(propagator);
         var services = new ServiceCollection();
         services.AddSingleton(configuration);
@@ -159,14 +159,7 @@ public sealed class LambdaObservability : IDisposable
     public async Task<APIGatewayProxyResponse> InvokeAsync(APIGatewayProxyRequest request, ILambdaContext context,
         Func<APIGatewayProxyRequest, ILambdaContext, Task<APIGatewayProxyResponse>> handler)
     {
-        var parent = propagator.Extract(default, request, static (input, key) =>
-        {
-            var multiValue = input.MultiValueHeaders?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (multiValue is { Length: > 0 })
-                return multiValue.SelectMany(header => header.Value ?? []);
-            return input.Headers?.Where(header => string.Equals(header.Key, key, StringComparison.OrdinalIgnoreCase))
-                .Select(header => header.Value) ?? [];
-        }).ActivityContext;
+        var parent = propagator.Extract(request).ActivityContext;
 
         // Null disables only the wrapper's implicit, unbounded ForceFlush.
         var response = await AWSLambdaWrapper.TraceAsync(null, handler, request, context, parent);
