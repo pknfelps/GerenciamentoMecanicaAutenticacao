@@ -59,6 +59,7 @@ jobs:
           role-session-name: auth-deploy-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Read and verify published SAM template
         run: |
+          set -euo pipefail
           mkdir -p artifacts/deploy
           for file in "sam-$TARGET_ENVIRONMENT.json" "sam-$TARGET_ENVIRONMENT.json.sha256"; do
             aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
@@ -73,16 +74,26 @@ jobs:
             echo '::error::Publique uma nova revisao SAM com OpenTelemetry, New Relic e X-Ray sempre ativos antes de provisionar.'
             exit 1
           }
-          code_uri="$(jq -er '.Resources.AuthFunction.Properties.CodeUri | select(type == "string")' "$template")"
-          prefix="s3://mecanica-artifacts-121754142617-us-east-1/"
-          case "$code_uri" in
-            "$prefix"*) zip_key="${code_uri#"$prefix"}" ;;
-            *) echo "::error::CodeUri points to an unexpected bucket"; exit 1 ;;
-          esac
+          jq -e '
+            .Resources.AuthFunction.Properties.CodeUri |
+            type == "object" and .Bucket == "mecanica-artifacts-121754142617-us-east-1" and
+            (.Key | type == "string") and
+            (.Version | type == "string" and length > 0 and . != "null" and . != "None")
+          ' "$template" > /dev/null || {
+            echo '::error::Publique uma nova revisao SAM com Bucket, Key e Version do ZIP antes de provisionar.'
+            exit 1
+          }
+          zip_key="$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Key' "$template")"
+          zip_version="$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Version' "$template")"
           case "$zip_key" in "sam/auth/$TARGET_ENVIRONMENT/$ARTIFACT_COMMIT/"*) ;; *) exit 1 ;; esac
           aws s3api head-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$zip_key" --query '{Version:VersionId,Size:ContentLength}'
-          echo "ZIP_KEY=$zip_key" >> "$GITHUB_ENV"
+            --expected-bucket-owner 121754142617 --key "$zip_key" --version-id "$zip_version" \
+            --query '{Version:VersionId,Size:ContentLength}' --output json > "$RUNNER_TEMP/zip-metadata.json"
+          jq -e --arg version "$zip_version" '.Version == $version and .Size > 0' "$RUNNER_TEMP/zip-metadata.json" > /dev/null
+          {
+            echo "ZIP_KEY=$zip_key"
+            echo "ZIP_VERSION=$zip_version"
+          } >> "$GITHUB_ENV"
       - name: Check Collector layer access
         run: |
           layer_arn="$(jq -er '.Resources.AuthFunction.Properties.Layers[0] | select(type == "string")' \
@@ -144,6 +155,7 @@ jobs:
             | tee artifacts/deploy/sam-deploy.txt
           {
             echo "SAM concluido: $STACK_NAME; ambiente: $TARGET_ENVIRONMENT; codigo/template: $ARTIFACT_COMMIT; workflow: $GITHUB_SHA."
+            echo "ZIP: $ZIP_KEY; S3 VersionId: $ZIP_VERSION."
             echo "OpenTelemetry e Collector New Relic sempre ativos. Ingestao externa pendente de conferencia."
             echo "X-Ray nativo sempre ativo. Segmentos nativos nao conferidos por este workflow."
           } >> "$GITHUB_STEP_SUMMARY"
