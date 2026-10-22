@@ -15,7 +15,7 @@ POST /customers/auth/request-code recebe document, cria desafio para cliente Act
 
 O cliente inicia o fluxo; o mecânico não emite acesso. O operador consulta o e-mail no SMTP4dev por acesso privado ao cluster para simular recebimento. A captura não comprova acesso à caixa pessoal de e-mail. SMTP4dev não fará relay externo e não terá volume persistente. Desafios ficam no PostgreSQL; caixa perdida exige novo código, sem endpoint que recupere seu valor.
 
-Auth precisa de SELECT de email e grants restritos sobre as tabelas de desafios e limites por documento, sem acesso a orders/usuários internos ou admin. Email não recebe credencial SQL/JWT. Persistir verificador protegido, limitar solicitações/tentativas, invalidar reenvio anterior e consumir uma única vez atomicamente. Falhas de envio/bootstrap/SQL permanecem técnicas e não expõem conteúdo.
+Auth precisa de SELECT de email e grants restritos sobre as tabelas de desafios e limites por UUID do cliente existente, sem acesso a orders/usuários internos ou admin. Email não recebe credencial SQL/JWT. Persistir verificador protegido, limitar solicitações/tentativas, invalidar reenvio anterior e consumir uma única vez atomicamente. Falhas de envio/bootstrap/SQL permanecem técnicas e não expõem conteúdo.
 
 JWT válido é usado diretamente na API, sem chamada prévia de sessão ou envio automático em 401. A API confere Active/titularidade, preserva Mechanic e aplica estado/transação da decisão. A rota antiga customers/validate e o Authorizer devem ser removidos/adaptados sem manter bypass por CPF ou token de orçamento.
 
@@ -31,7 +31,7 @@ Antes de renomear GitHub/local, preparar confiança OIDC de transição no boots
 
 ## Dependências, testes e limites
 
-Base/SMTP4dev precede email; banco/migração e email precedem auth/API; Gateway vem depois. No descarte, Gateway → API/auth → banco/email → base. Auth-destroy mantém seu bloqueio Gateway; email-destroy exige API/auth ausentes. Dois SAMs permitem retirar auth sem apagar o envio ainda consumido pela API.
+Base/SMTP4dev precede email; banco inicializado e email precedem auth/API; Gateway vem depois. No descarte, Gateway → API/auth → banco/email → base. Auth-destroy mantém seu bloqueio Gateway; email-destroy exige API/auth ausentes. Dois SAMs permitem retirar auth sem apagar o envio ainda consumido pela API.
 
 Manter SDK/runtime, bootstrap reutilizado, TLS do RDS, deadlines, sanitização e observabilidade existentes. AE.1 definiu SAM local start-lambda/Invoke v1 e SMTP4dev do Compose, sem duplicar SMTP na API; auth mantém bootstrap injetado nos testes. A execução Docker será comprovada na implementação.
 
@@ -42,8 +42,25 @@ Evidências LA.1 antigas não certificam AE. Nome do repositório, pastas, solu�
 
 ## Contratos consolidados — AE.1
 
-[Contrato central HTTP/JWT/Invoke e dependências](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md), 22/10/2026. Código de oito dígitos/5 minutos/5 tentativas; solicitação limitada também para documentos desconhecidos, cooldown de 60 segundos e cinco pedidos/hora. Pending só autentica depois de virar Ready após captura confirmada. JWT Customer genérico por dez minutos; ClockSkew zero na API. Respostas 202/200/400/401/429/500 e envio v1 Captured/failure definidos. Código LA descartado pelo mantenedor; evidências anteriores são históricas. AE.2 organizou os projetos localmente e preservou o funcionamento auth; renomeação remota e auth-ci/OIDC estão comprovados; plano final aprovado/aplicado, confiança antiga retirada e Terraform posterior sem diferenças. AE.2 concluída. Nenhum fluxo de código/e-mail foi implementado.
+[Contrato central HTTP/JWT/Invoke e dependências](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md), 22/10/2026. Código de oito dígitos/5 minutos/5 tentativas; cliente inexistente retorna antes de qualquer gravação, com log sanitizado; limites para cliente existente elegível usam seu UUID, cooldown de 60 segundos e cinco pedidos/hora. Pending só autentica depois de virar Ready após captura confirmada. JWT Customer genérico por dez minutos; ClockSkew zero na API. Respostas 202/200/400/401/429/500 e envio v1 Captured/failure definidos. Código LA descartado pelo mantenedor; evidências anteriores são históricas. AE.2 organizou os projetos localmente e preservou o funcionamento auth; renomeação remota e auth-ci/OIDC estão comprovados; plano final aprovado/aplicado, confiança antiga retirada e Terraform posterior sem diferenças. AE.2 concluída. Nenhum fluxo de código/e-mail foi implementado.
 
 ## AE.2 — validação local
 
 Restore/build Release sem avisos/erros e 269 testes existentes aprovados, sem falhas/ignorados, incluindo PostgreSQL real em Testcontainers. SAM validate/build, publish auth linux-x64, estrutura email isolada e actionlint/ShellCheck aprovados. C# movido sem alteração de conteúdo, OpenAPI idêntico; somente CodeUri foi ajustado no template auth. Terraform da transição validado offline. [Roteiro e pendências administrativas](MIGRACAO_AE2_SERVERLESS.md). Evidências locais em artifacts/ae2/validation.json e artifacts/ae2/tests; não comprovam deploy ou envio.
+
+
+## Revisão do mantenedor — AE.3
+
+Tabelas customer_auth_challenges/customer_auth_request_limits diretamente no Init.sql para banco vazio; sem migrations. O destroy do ambiente remove a instância RDS, e novo provisionamento recria os dados a partir do SQL. Nenhum CHECK de negócio, UNIQUE condicionado ao estado, FK nova de cliente ou cascata; regras de validade, tentativas, estados e consumo são implementadas/validadas em C#, com transações e operações condicionais.
+
+Auth consulta o cliente antes de qualquer gravação. Se ausente, registra somente mensagem fixa sanitizada e retorna imediatamente o 202 genérico com identificador opaco em memória; não persiste desafio, limite ou auditoria nem executa envio/limpeza. Para cliente existente elegível, limites usam customer_id; não há HMAC/HKDF do documento para o índice. Código continua protegido por PBKDF2-SHA256. Esse fluxo será implementado na AE.6; o ajuste atual consolida o contrato e o DDL.
+
+## AE.3 — operações transacionais preparadas
+
+Componentes C# de criação/substituição Pending, ativação Ready, invalidação e confirmação/consumo preparados em ICustomerAccessStore/PostgreSqlCustomerAccessStore, com regras em CustomerAccessChallenge/CustomerAccessRequestLimit. Cliente inexistente retorna antes de gerar código ou acessar as tabelas de autenticação, registrando somente mensagem Information fixa. Limites por UUID do cliente encontrado, 60 segundos/cinco pedidos por hora; negativas não adiam o cooldown.
+
+Advisory lock transacional por cliente, locks das linhas novas e relógio UTC do PostgreSQL; sem FOR UPDATE/escrita em customers, constraints de negócio, migrations ou transação aberta durante envio. Tentativa incorreta/documento divergente de Ready válido é persistida com commit; quinta invalida. Assinatura ocorre antes do consumo/commit e token só retorna após confirmação. Substituído/encerrado não é reativado. Cancelamento/falha provoca rollback preservando a exceção original.
+
+Restore/build Release, regressão de 309 testes (40 novos: 11 regras C# e 29 PostgreSQL), zero falhas/ignorados. Testes locais usam PostgreSQL 16.15/Testcontainers e grants explicitamente preparados na fixture; não comprovam grants de produção ainda não alterados. Detalhes, nomes de testes e limites: [operações transacionais](https://github.com/pknfelps/GerenciamentoMecanicaServerless/blob/develop/docs/AE3_OPERACOES_TRANSACIONAIS.md).
+
+O store ainda não está ligado ao handler/casos de uso HTTP, e não chama EmailFunction. Isso permanece na AE.6. Resultado de criação contém código/e-mail somente para uso interno e não deve ser serializado ou registrado no HTTP/log; a resposta pública será montada separadamente. Grants e limpeza oportunista continuam pendentes na AE.3. Nenhuma alteração AWS, SQL/grants, IAM ou workflows nesta preparação.
