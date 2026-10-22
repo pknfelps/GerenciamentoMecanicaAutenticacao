@@ -1,9 +1,11 @@
 using System.Security.Cryptography;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Dapper;
 using GerenciamentoMecanica.Autenticacao.Application.Authentication;
 using GerenciamentoMecanica.Autenticacao.Domain.Customers;
 using GerenciamentoMecanica.Autenticacao.Infrastructure.Persistence;
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NSubstitute;
@@ -438,6 +440,263 @@ public sealed class PostgreSqlCustomerAccessStoreTests
 
         Assert.That((await store.CreatePendingAsync(OtherDocument)).Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
         Assert.That(await ScalarAsync<int>("SELECT count(*) FROM customer_auth_request_limits"), Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task EachAdmittedRequestDeletesAtMostOneHundredExpiredRowsFromEachTable()
+    {
+        await SeedExpiredRowsAsync(105);
+
+        var first = await store.CreatePendingAsync(Document);
+
+        Assert.That(first.Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(5));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(5));
+        Assert.That((await ChallengeAsync(first.ChallengeId)).State, Is.EqualTo("Pending"));
+        Assert.That((await LimitAsync()).RequestCount, Is.EqualTo(1));
+
+        await PermitNextRequestAsync();
+        var second = await store.CreatePendingAsync(Document);
+
+        Assert.That(second.Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That(await ExpiredChallengesAsync(), Is.Zero);
+        Assert.That(await ExpiredLimitsAsync(), Is.Zero);
+        Assert.That((await LimitAsync()).RequestCount, Is.EqualTo(2));
+    }
+
+    [TestCase("Pending")]
+    [TestCase("Ready")]
+    [TestCase("Consumed")]
+    [TestCase("Invalidated")]
+    public async Task CleanupPreservesEveryChallengeWhoseFiveMinuteLifetimeHasNotEnded(string state)
+    {
+        var id = Guid.NewGuid();
+        var now = await ScalarAsync<DateTime>("SELECT clock_timestamp()");
+        await SqlAsync("""
+            INSERT INTO customer_auth_challenges
+                (id,customer_id,code_salt,code_verifier,created_at,expires_at,state,consumed_at,invalidated_at)
+            VALUES (@id,@OtherCustomerId,decode(repeat('01',16),'hex'),decode(repeat('02',32),'hex'),
+                @CreatedAt,@ExpiresAt,@state,@ConsumedAt,@InvalidatedAt)
+            """, new { id, OtherCustomerId, CreatedAt = now.AddMinutes(-1), ExpiresAt = now.AddMinutes(4), state,
+                ConsumedAt = state == "Consumed" ? (DateTime?)now : null,
+                InvalidatedAt = state == "Invalidated" ? (DateTime?)now : null });
+        await SeedExpiredRowsAsync(1);
+
+        await store.CreatePendingAsync(Document);
+
+        Assert.That((await ChallengeAsync(id)).State, Is.EqualTo(state));
+        Assert.That(await ExpiredChallengesAsync(), Is.Zero);
+    }
+
+    [Test]
+    public async Task CleanupRequiresBothTheEndOfTheHourAndTheEndOfTheCooldown()
+    {
+        var now = await ScalarAsync<DateTime>("SELECT clock_timestamp()");
+        var cooldownId = Guid.NewGuid();
+        var activeWindowId = Guid.NewGuid();
+        var expiredId = Guid.NewGuid();
+        await InsertLimitAsync(cooldownId, now.AddSeconds(-20), now.AddSeconds(-30));
+        await InsertLimitAsync(activeWindowId, now.AddMinutes(10), now.AddMinutes(-10));
+        await InsertLimitAsync(expiredId, now.AddMinutes(-5), now.AddMinutes(-10));
+
+        await store.CreatePendingAsync(Document);
+
+        await using var connection = await admin.OpenConnectionAsync();
+        var remaining = await connection.QueryAsync<Guid>(
+            "SELECT customer_id FROM customer_auth_request_limits WHERE customer_id<>@CustomerId", new { CustomerId });
+        Assert.That(remaining, Is.EquivalentTo(new[] { cooldownId, activeWindowId }));
+    }
+
+    [TestCase("missing")]
+    [TestCase("inactive")]
+    [TestCase("invalid-email")]
+    [TestCase("rate-limited")]
+    public async Task ARequestThatIsNotAdmittedDoesNotRunCleanup(string reason)
+    {
+        if (reason == "rate-limited") await store.CreatePendingAsync(Document);
+        if (reason == "missing") await SqlAsync("DELETE FROM customers WHERE id=@CustomerId", new { CustomerId });
+        if (reason == "inactive") await SqlAsync("UPDATE customers SET status='Inactive' WHERE id=@CustomerId", new { CustomerId });
+        if (reason == "invalid-email") await SqlAsync("UPDATE customers SET email='' WHERE id=@CustomerId", new { CustomerId });
+        await SeedExpiredRowsAsync(1);
+
+        var result = await store.CreatePendingAsync(Document);
+
+        Assert.That(result.Outcome, Is.Not.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task ARequestThatRollsBackDoesNotRunCleanup()
+    {
+        await SeedExpiredRowsAsync(1);
+        await SqlAsync("REVOKE INSERT ON customer_auth_challenges FROM access_auth");
+
+        Assert.ThrowsAsync<PostgresException>(() => store.CreatePendingAsync(Document));
+
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1));
+        Assert.That(await ScalarAsync<int>("SELECT count(*) FROM customer_auth_request_limits WHERE customer_id='11111111-2222-4333-8444-555555555555'"), Is.Zero);
+    }
+
+    [TestCase("customer_auth_challenges")]
+    [TestCase("customer_auth_request_limits")]
+    public async Task CleanupFailureRollsBackOnlyCleanupAndKeepsTheCommittedRequest(string table)
+    {
+        await SeedExpiredRowsAsync(1);
+        await SqlAsync($"REVOKE DELETE ON {table} FROM access_auth");
+
+        var result = await store.CreatePendingAsync(Document);
+
+        Assert.That(result.Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That((await ChallengeAsync(result.ChallengeId)).State, Is.EqualTo("Pending"));
+        Assert.That((await LimitAsync()).RequestCount, Is.EqualTo(1));
+        // Even a failure on the second table restores the first table's expired row.
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1));
+        AssertSanitizedCleanupWarning();
+    }
+
+    [Test]
+    public async Task CleanupSkipsLockedRowsAndPreservesALimitBeingRenewedByAnotherTransaction()
+    {
+        await SeedExpiredRowsAsync(2);
+        await using var blocker = await admin.OpenConnectionAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        var challengeId = await blocker.QuerySingleAsync<Guid>(
+            "SELECT id FROM customer_auth_challenges ORDER BY id LIMIT 1 FOR UPDATE", transaction: transaction);
+        var limitId = await blocker.QuerySingleAsync<Guid>(
+            "SELECT customer_id FROM customer_auth_request_limits ORDER BY customer_id LIMIT 1 FOR UPDATE", transaction: transaction);
+        await blocker.ExecuteAsync("""
+            UPDATE customer_auth_request_limits SET window_started_at=clock_timestamp(),
+                window_expires_at=clock_timestamp()+interval '1 hour',last_requested_at=clock_timestamp(),request_count=1
+            WHERE customer_id=@limitId
+            """, new { limitId }, transaction);
+
+        var result = await store.CreatePendingAsync(Document);
+
+        Assert.That(result.Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1)); // Previous version is visible until commit.
+        Assert.That((await ChallengeAsync(challengeId)).Id, Is.EqualTo(challengeId));
+        await transaction.CommitAsync();
+        Assert.That(await ExpiredLimitsAsync(), Is.Zero);
+        Assert.That(await ScalarAsync<int>("SELECT count(*) FROM customer_auth_request_limits"), Is.EqualTo(2));
+        Assert.That(logger.ReceivedCalls().Where(call => call.GetMethodInfo().Name == "Log"), Is.Empty);
+    }
+
+    [Test]
+    public async Task CleanupTimeoutKeepsTheCommittedRequestAndReturnsWithoutWaitingForATableLock()
+    {
+        await SeedExpiredRowsAsync(1);
+        await using var blocker = await admin.OpenConnectionAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        using var metrics = new IntegrationMetrics();
+        // Acquire the table lock only after the request's real commit, not during its inserts.
+        using var listener = AfterFirstCommit(() => blocker.Execute(
+            "LOCK TABLE customer_auth_request_limits IN ACCESS EXCLUSIVE MODE", transaction: transaction));
+        var instrumentedStore = new PostgreSqlCustomerAccessStore(authentication, logger, metrics, () => Code);
+        var elapsed = Stopwatch.StartNew();
+
+        var result = await instrumentedStore.CreatePendingAsync(Document);
+
+        Assert.That(result.Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That(elapsed.Elapsed, Is.LessThan(TimeSpan.FromSeconds(5)));
+        await transaction.RollbackAsync();
+        Assert.That((await ChallengeAsync(result.ChallengeId)).State, Is.EqualTo("Pending"));
+        Assert.That((await LimitAsync()).RequestCount, Is.EqualTo(1));
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1));
+        AssertSanitizedCleanupWarning();
+    }
+
+    [Test]
+    public async Task CancellationAfterTheRequestCommitSkipsCleanupAndPreservesTheResult()
+    {
+        await SeedExpiredRowsAsync(1);
+        using var cancellation = new CancellationTokenSource();
+        using var metrics = new IntegrationMetrics();
+        using var listener = AfterFirstCommit(cancellation.Cancel);
+        var instrumentedStore = new PostgreSqlCustomerAccessStore(authentication, logger, metrics, () => Code);
+
+        var result = await instrumentedStore.CreatePendingAsync(Document, cancellation.Token);
+
+        Assert.That(cancellation.IsCancellationRequested, Is.True);
+        Assert.That(result.Outcome, Is.EqualTo(CustomerCodeRequestOutcome.Pending));
+        Assert.That((await ChallengeAsync(result.ChallengeId)).State, Is.EqualTo("Pending"));
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1));
+        Assert.That(logger.ReceivedCalls().Where(call => call.GetMethodInfo().Name == "Log"), Is.Empty);
+    }
+
+    [TestCase("activate")]
+    [TestCase("invalidate")]
+    [TestCase("verify")]
+    public async Task OtherChallengeOperationsDoNotRunCleanup(string operation)
+    {
+        var pending = await store.CreatePendingAsync(Document);
+        if (operation == "verify") await store.ActivateAsync(CustomerId, pending.ChallengeId);
+        await SeedExpiredRowsAsync(1);
+
+        if (operation == "activate") Assert.That(await store.ActivateAsync(CustomerId, pending.ChallengeId), Is.True);
+        if (operation == "invalidate") Assert.That(await store.InvalidateAsync(CustomerId, pending.ChallengeId), Is.True);
+        if (operation == "verify") Assert.That((await store.VerifyAndConsumeAsync(pending.ChallengeId, Document, Code, tokens)).Token, Is.EqualTo("local-token"));
+
+        Assert.That(await ExpiredChallengesAsync(), Is.EqualTo(1));
+        Assert.That(await ExpiredLimitsAsync(), Is.EqualTo(1));
+    }
+
+    private async Task SeedExpiredRowsAsync(int count)
+    {
+        var now = await ScalarAsync<DateTime>("SELECT clock_timestamp()");
+        await SqlAsync("""
+            INSERT INTO customer_auth_challenges(id,customer_id,code_salt,code_verifier,created_at,expires_at)
+            SELECT md5('expired-challenge-'||n)::uuid,@OtherCustomerId,
+                decode(repeat('01',16),'hex'),decode(repeat('02',32),'hex'),@CreatedAt,@ExpiresAt
+            FROM generate_series(1,@Count) AS numbers(n);
+            INSERT INTO customer_auth_request_limits(customer_id,window_started_at,window_expires_at,request_count,last_requested_at)
+            SELECT md5('expired-limit-'||n)::uuid,@WindowStart,@WindowEnd,1,@WindowStart
+            FROM generate_series(1,@Count) AS numbers(n);
+            """, new { OtherCustomerId, Count = count, CreatedAt = now.AddMinutes(-10), ExpiresAt = now.AddMinutes(-5),
+                WindowStart = now.AddHours(-2), WindowEnd = now.AddHours(-1) });
+    }
+
+    private Task InsertLimitAsync(Guid id, DateTime end, DateTime last) => SqlAsync("""
+        INSERT INTO customer_auth_request_limits(customer_id,window_started_at,window_expires_at,request_count,last_requested_at)
+        VALUES (@id,@Start,@end,1,@last)
+        """, new { id, Start = end.AddHours(-1), end, last });
+
+    private Task<int> ExpiredChallengesAsync() => ScalarAsync<int>(
+        "SELECT count(*) FROM customer_auth_challenges WHERE expires_at<=clock_timestamp()");
+
+    private Task<int> ExpiredLimitsAsync() => ScalarAsync<int>(
+        "SELECT count(*) FROM customer_auth_request_limits WHERE window_expires_at<=clock_timestamp() AND last_requested_at<=clock_timestamp()-interval '60 seconds'");
+
+    private void AssertSanitizedCleanupWarning()
+    {
+        var log = logger.ReceivedCalls().Single(call => call.GetMethodInfo().Name == "Log").GetArguments();
+        Assert.That(log[0], Is.EqualTo(LogLevel.Warning));
+        Assert.That(log[3], Is.Null);
+        Assert.That(log[2]!.ToString(), Does.StartWith("Não foi possível limpar os registros expirados de autenticação. Tipo: ")
+            .And.Not.Contain(Document).And.Not.Contain(Code).And.Not.Contain("customer_auth_").And.Not.Contain("permission denied"));
+    }
+
+    private static MeterListener AfterFirstCommit(Action action)
+    {
+        var invoked = 0;
+        var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, owner) =>
+        {
+            if (instrument.Meter.Name == IntegrationMetrics.MeterName) owner.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            var attributes = tags.ToArray().ToDictionary(tag => tag.Key, tag => tag.Value);
+            if (Equals(attributes["operation"], "transaction.commit") && Equals(attributes["outcome"], "success")
+                && Interlocked.Exchange(ref invoked, 1) == 0) action();
+        });
+        listener.Start();
+        return listener;
     }
 
     private async Task<CustomerCodeRequestResult> ReadyAsync()

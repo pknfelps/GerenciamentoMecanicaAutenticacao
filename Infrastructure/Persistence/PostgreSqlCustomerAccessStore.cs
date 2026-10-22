@@ -14,6 +14,7 @@ public sealed class PostgreSqlCustomerAccessStore(
     NpgsqlDataSource database, ILogger<PostgreSqlCustomerAccessStore> logger,
     IntegrationMetrics? metrics = null, Func<string>? generateCode = null) : ICustomerAccessStore
 {
+    private const int CleanupBatchSize = 100;
     private const string CustomerColumns = "id, name, document, status, email";
     private const string ChallengeColumns = """
         id, customer_id AS CustomerId, code_salt AS Salt, code_verifier AS Verifier,
@@ -36,7 +37,7 @@ public sealed class PostgreSqlCustomerAccessStore(
         if (!Eligible(customer))
             return CustomerCodeRequestResult.NotEligible();
 
-        return await InTransactionAsync(connection, customer.Id, async transaction =>
+        var result = await InCustomerTransactionAsync(connection, customer.Id, async transaction =>
         {
             customer = await FindCustomerAsync(connection, transaction, customer.Id, cancellationToken);
             if (customer is null)
@@ -81,13 +82,17 @@ public sealed class PostgreSqlCustomerAccessStore(
                     challenge.CreatedAt, challenge.ExpiresAt, State = challenge.State.ToString(), challenge.FailedAttempts }, cancellationToken);
             return CustomerCodeRequestResult.Pending(challenge.Id, customer.ToIdentity(), customer.Email!, code);
         }, cancellationToken);
+        // The admitted request is already committed; cleanup cannot undo it.
+        if (result.Outcome == CustomerCodeRequestOutcome.Pending)
+            await CleanupExpiredAsync(connection, cancellationToken);
+        return result;
     }
 
     public async Task<bool> ActivateAsync(Guid customerId, Guid challengeId, CancellationToken cancellationToken = default)
     {
         RequireIds(customerId, challengeId);
         await using var connection = await OpenAsync(cancellationToken);
-        return await InTransactionAsync(connection, customerId, async transaction =>
+        return await InCustomerTransactionAsync(connection, customerId, async transaction =>
         {
             var challenge = await FindChallengeAsync(connection, transaction, customerId, challengeId, cancellationToken);
             if (challenge is null || challenge.State != CustomerAccessChallengeState.Pending)
@@ -112,7 +117,7 @@ public sealed class PostgreSqlCustomerAccessStore(
     {
         RequireIds(customerId, challengeId);
         await using var connection = await OpenAsync(cancellationToken);
-        return await InTransactionAsync(connection, customerId, async transaction =>
+        return await InCustomerTransactionAsync(connection, customerId, async transaction =>
         {
             var challenge = await FindChallengeAsync(connection, transaction, customerId, challengeId, cancellationToken);
             if (challenge is null || !challenge.IsOpen)
@@ -139,7 +144,7 @@ public sealed class PostgreSqlCustomerAccessStore(
         if (customerId == Guid.Empty)
             throw new InvalidDataException("Stored challenge customer identifier is invalid.");
 
-        return await InTransactionAsync(connection, customerId.Value, async transaction =>
+        return await InCustomerTransactionAsync(connection, customerId.Value, async transaction =>
         {
             var challenge = await FindChallengeAsync(connection, transaction, customerId.Value, challengeId, cancellationToken);
             if (challenge is null || !challenge.IsOpen)
@@ -173,7 +178,7 @@ public sealed class PostgreSqlCustomerAccessStore(
                 return CustomerAuthenticationResult.NotEligible();
             }
 
-            // Prepare signing before consuming; return the result only after InTransactionAsync commits.
+            // Prepare signing before consuming; return the result only after the transaction commits.
             var token = tokenIssuer.Generate(customer.ToIdentity());
             ArgumentException.ThrowIfNullOrWhiteSpace(token);
             cancellationToken.ThrowIfCancellationRequested();
@@ -202,16 +207,62 @@ public sealed class PostgreSqlCustomerAccessStore(
         IntegrationMetrics.MeasureAsync(metrics, "postgresql", "connection.open", "application",
             () => database.OpenConnectionAsync(cancellationToken).AsTask(), cancellationToken);
 
-    private async Task<T> InTransactionAsync<T>(NpgsqlConnection connection, Guid customerId,
+    private async Task CleanupExpiredAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(1));
+        try
+        {
+            await InTransactionAsync(connection, async transaction =>
+            {
+                var now = await NowAsync(connection, transaction, budget.Token);
+                await ExecuteAsync(connection, transaction, """
+                    WITH expired AS (
+                        SELECT id FROM public.customer_auth_challenges
+                        WHERE expires_at <= @Now
+                        ORDER BY expires_at, id LIMIT @BatchSize FOR UPDATE SKIP LOCKED
+                    )
+                    DELETE FROM public.customer_auth_challenges AS challenge
+                    USING expired WHERE challenge.id = expired.id
+                    """, new { Now = now, BatchSize = CleanupBatchSize }, budget.Token);
+                await ExecuteAsync(connection, transaction, """
+                    WITH expired AS (
+                        SELECT customer_id FROM public.customer_auth_request_limits
+                        WHERE window_expires_at <= @Now AND last_requested_at <= @CooldownEndedBefore
+                        ORDER BY window_expires_at, customer_id LIMIT @BatchSize FOR UPDATE SKIP LOCKED
+                    )
+                    DELETE FROM public.customer_auth_request_limits AS request_limit
+                    USING expired WHERE request_limit.customer_id = expired.customer_id
+                    """, new { Now = now, CooldownEndedBefore = now.AddSeconds(-60), BatchSize = CleanupBatchSize }, budget.Token);
+                return true;
+            }, budget.Token);
+        }
+        catch (Exception error)
+        {
+            logger.LogWarning("Não foi possível limpar os registros expirados de autenticação. Tipo: {ExceptionType}",
+                error.GetType().FullName);
+        }
+    }
+
+    private Task<T> InCustomerTransactionAsync<T>(NpgsqlConnection connection, Guid customerId,
+        Func<NpgsqlTransaction, Task<T>> action, CancellationToken cancellationToken) =>
+        InTransactionAsync(connection, async transaction =>
+        {
+            await ExecuteAsync(connection, transaction,
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(@CustomerId AS text), 0))",
+                new { CustomerId = customerId }, cancellationToken);
+            return await action(transaction);
+        }, cancellationToken);
+
+    private async Task<T> InTransactionAsync<T>(NpgsqlConnection connection,
         Func<NpgsqlTransaction, Task<T>> action, CancellationToken cancellationToken)
     {
         await using var transaction = await IntegrationMetrics.MeasureAsync(metrics, "postgresql", "transaction.begin", "application",
             () => connection.BeginTransactionAsync(cancellationToken).AsTask(), cancellationToken);
         try
         {
-            await ExecuteAsync(connection, transaction,
-                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(@CustomerId AS text), 0))",
-                new { CustomerId = customerId }, cancellationToken);
             var result = await action(transaction);
             await IntegrationMetrics.MeasureAsync(metrics, "postgresql", "transaction.commit", "application",
                 async () => { await transaction.CommitAsync(cancellationToken); return true; }, cancellationToken);

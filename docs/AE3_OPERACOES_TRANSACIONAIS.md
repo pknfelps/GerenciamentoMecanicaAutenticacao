@@ -10,7 +10,7 @@
 - Infrastructure/Persistence/PostgreSqlCustomerAccessStore: consultas parametrizadas, transações Npgsql e medições técnicas de acesso pelo componente existente.
 - Infrastructure/Authentication/CustomerAccessCode: código aleatório de oito dígitos ASCII, preservando zeros iniciais; PBKDF2-HMAC-SHA256 com salt de 16 bytes, 600.000 iterações, verificador de 32 bytes e comparação constante. Usa somente APIs nativas.
 
-O mapeamento de CustomerRow foi compartilhado com o lookup anterior; ele continua consultando somente as quatro colunas anteriores. O novo store consulta também email, cujo grant de produção ainda será acrescentado no passo próprio da AE.3. Não houve mudança de pacote, SQL de inicialização, grants ou código do handler nesta preparação.
+O mapeamento de CustomerRow foi compartilhado com o lookup anterior; ele continua consultando somente as quatro colunas anteriores. O novo store consulta também email, cujo [grant restrito foi posteriormente preparado e validado localmente](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/blob/develop/docs/AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md). Não houve mudança de pacote, SQL de inicialização, grants ou código do handler nesta preparação.
 
 ## Operações
 
@@ -25,7 +25,7 @@ CreatePendingAsync recebe documento já normalizado. VerifyAndConsumeAsync receb
 
 O resultado de criação é interno e contém Customer/Email/Code apenas em memória para a futura montagem do envio. **Não serializar ou registrar esse resultado como resposta HTTP/log.** O handler montará somente challengeId/mensagem fixa para o 202 público. CustomerCodeRequestResult é classe comum: não gera ToString com seus dados como um record faria.
 
-Cliente inexistente gera somente mensagem Information fixa Solicitação de autenticação para cliente não encontrado. Sem CPF, e-mail ou código nas propriedades. Não há limpeza oportunista neste componente ainda; sua implementação permanece pendente e não poderá rodar nesse caminho.
+Cliente inexistente gera somente mensagem Information fixa Solicitação de autenticação para cliente não encontrado. Sem CPF, e-mail ou código nas propriedades. A limpeza oportunista é executada somente depois do commit de uma solicitação admitida; nunca roda no caminho de cliente inexistente. [Implementação e validação](AE3_LIMPEZA_EXPIRADOS.md).
 
 ## Transação e concorrência
 
@@ -57,10 +57,14 @@ Os testes usam nomes que descrevem a regra, sem exporters ou Collector:
 | BrokenConnectionDoesNotReplaceTheOriginalFailureWithARollbackError | Encerra a conexão local durante a assinatura; rollback não mascara o erro e o código fica Ready. |
 | CancellationWhileWaitingForTheCustomerLockDoesNotWrite | Aguarda o bloqueio aparecer em pg_stat_activity, cancela e confere ausência de gravação. |
 
-As fixtures PostgreSQL 16.15 são descartáveis e não contêm CHECKs/FKs de negócio nas tabelas novas. O usuário local de testes recebe explicitamente os grants previstos, incluindo SELECT email; isso não comprova os grants ainda não alterados no ProvisionAuthUser.sql. Cada teste também confere que não restaram conexões de autenticação abertas. Os testes ajustam somente datas persistidas locais para não esperar 60 segundos entre cenários.
+As fixtures PostgreSQL 16.15 são descartáveis e não contêm CHECKs/FKs de negócio nas tabelas novas. O usuário local de testes recebe explicitamente os grants previstos, incluindo SELECT email; isso não substitui a conferência separada do ProvisionAuthUser.sql real, concluída localmente e referenciada acima. Cada teste também confere que não restaram conexões de autenticação abertas. Os testes ajustam somente datas persistidas locais para não esperar 60 segundos entre cenários.
 
-Regressão final: 309 testes aprovados, zero falhas/ignorados, sendo 40 novos (11 de regras e 29 PostgreSQL). EmailFunctionTests permanece estrutura sem casos; não conta como cobertura do envio. Restore/build Release sem avisos/erros. O SDK exigido 10.0.402 compilou; no Windows, os testes usaram VSTest 18.6/.NET 10.0.9 já instalados porque o runtime temporário 10.0.13 do SDK está incompleto (System.Net.Mail ausente). Nenhuma dependência foi acrescentada para contornar o ambiente. Evidências em artifacts/ae3-transactions, fora do Git.
+Regressão da preparação transacional anterior: 309 testes aprovados, zero falhas/ignorados, sendo 40 novos (11 de regras e 29 PostgreSQL). EmailFunctionTests permanece estrutura sem casos; não conta como cobertura do envio. Restore/build Release sem avisos/erros. O SDK exigido 10.0.402 compilou; no Windows, os testes usaram VSTest 18.6/.NET 10.0.9 já instalados porque o runtime temporário 10.0.13 do SDK está incompleto (System.Net.Mail ausente). Nenhuma dependência foi acrescentada para contornar o ambiente. Evidências em artifacts/ae3-transactions, fora do Git.
 
 ## Próximos passos
 
-AE.3 permanece parcial até grants restritos e limpeza oportunista limitada. AE.6 conectará os componentes aos novos parsers/casos de uso/handler, montará respostas públicas, criará o assinador definitivo de dez minutos e invocará EmailFunction entre Pending/Ready. HTTP/JWT existentes foram preservados; não declarar esse fluxo novo implantado. Não houve alteração de AWS, SQL/grants, IAM, SAM, Collector ou workflows nesta preparação.
+Grants restritos e [limpeza oportunista](AE3_LIMPEZA_EXPIRADOS.md) preparados e validados localmente. AE.3 concluída no escopo local, com nova regressão completa de 328 testes aprovada. AE.6 conectará os componentes aos novos parsers/casos de uso/handler, montará respostas públicas, criará o assinador definitivo de dez minutos e invocará EmailFunction entre Pending/Ready. HTTP/JWT existentes foram preservados; não declarar esse fluxo novo implantado. Não houve alteração de AWS, SQL/grants, IAM, SAM, Collector ou workflows nesta preparação.
+
+## Reconferência PostgreSQL local — 22/10/2026
+
+[Registro consolidado](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/VALIDACAO_AE3_POSTGRESQL_LOCAL_2026-10-22.md): Job atual inicializa banco vazio, reconhece repetição e recusa hash divergente/banco não vazio sem marcador, sem alterar dados. Estrutura/seeds/instantes e grants reais conferidos em PostgreSQL 16.15 descartável. Nova regressão Serverless: 309 testes aprovados, zero falhas/ignorados; restore/build Release sem avisos/erros. Sem migração, regras de negócio no SQL, alteração de produção ou acesso AWS. Nessa reconferência anterior, limpeza ainda estava pendente. A implementação e os testes posteriores estão em [limpeza dos expirados](AE3_LIMPEZA_EXPIRADOS.md).
