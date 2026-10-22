@@ -1,6 +1,6 @@
 # Funções serverless da oficina
 
-> **Extra em revisão — 22/10/2026:** a implementação local LA.1 de Authorizer/token de orçamento foi substituída como desenho pelo [fluxo planejado de código e SMTP4dev](docs/AUTENTICACAO_E_EMAIL_PLANEJADO.md). O mantenedor descartou o código LA.1, preservando a documentação. As seções abaixo foram alinhadas à base atual por documento; os contratos AE.1 de código/e-mail ainda serão implementados. GitHub, pasta raiz e remote já usam GerenciamentoMecanicaServerless; AuthFunction preserva os nomes de assembly/namespace existentes.
+> **Extra em revisão — 22/10/2026:** a implementação local LA.1 de Authorizer/token de orçamento foi substituída como desenho pelo [fluxo planejado de código e SMTP4dev](docs/AUTENTICACAO_E_EMAIL_PLANEJADO.md). O mantenedor descartou o código LA.1, preservando a documentação. As seções abaixo foram alinhadas à base atual por documento; AE.3 preparou o store transacional e AE.5 implementou o transporte EmailFunction local; a integração HTTP/Invoke dos consumidores segue nas AE.6/AE.7. GitHub, pasta raiz e remote já usam GerenciamentoMecanicaServerless; AuthFunction preserva os nomes de assembly/namespace existentes.
 
 Lambda .NET 10 que valida CPF/CNPJ numérico, consulta elegibilidade pelo documento e emite JWT Customer. O novo fluxo por código substituirá essa emissão por documento isolado. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
 
@@ -18,6 +18,8 @@ Função/SAM/Gateway/JWT/SQL e telemetria foram implantados e conferidos em **ho
 | Application | Caso de uso e interfaces de consulta/emissão |
 | Infrastructure | Configuração AWS, PostgreSQL, documentos/JWT e métricas de acessos |
 | AuthFunction | Handler REST proxy, bootstrap/runtime reutilizável e composição OTel |
+| EmailFunction | Contrato Invoke privado e transporte SMTP centralizado; sem banco/JWT |
+| EmailFunctionTests | Contrato, configuração, handler e captura SMTP4dev descartável |
 | ApplicationTests/ContractTests/InfrastructureTests/AuthFunctionTests | Regras, pacote, configuração/adaptadores/PostgreSQL e contrato do handler |
 
 Projetos net10.0, Npgsql 10.0.2/Dapper e pacote Auth.Contracts [1.0.0]. SAM CLI 1.167.0/CloudFormation entrega ZIP linux-x64/framework-dependent, runtime dotnet10/x86_64, 512 MB e timeout 15 s. Não há Dockerfile da função nem novo executável local; [Compose](compose.observability.yaml) inicia somente Collector para conferência manual.
@@ -157,3 +159,7 @@ AE.3 revisada: tabelas no Init.sql do banco vazio, sem migrations nem regras de 
 ## AE.3 — operações transacionais preparadas
 
 [Criação, ativação, invalidação e consumo em C#](docs/AE3_OPERACOES_TRANSACIONAIS.md) implementados como componentes separados do handler atual. Regras de estado/prazo/tentativas no domínio; transações Npgsql com locks por UUID e revalidação do cadastro. Cliente inexistente sem gravação; assinatura antes do commit; tentativas negativas persistidas e uma confirmação retornada nas chamadas concorrentes. Regressão local final com limpeza: 328 testes aprovados, sem falhas/ignorados. [Grants restritos preparados e validados localmente](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/blob/develop/docs/AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md); [limpeza implementada e validada](docs/AE3_LIMPEZA_EXPIRADOS.md), até 100 expirados por tabela após commit, sem retenção extra de 24 horas. AE.3 concluída no escopo local; ligação HTTP/Invoke na AE.6. Sem publicação AWS.
+
+## AE.5 — envio central preparado localmente
+
+[EmailFunction implementada e conferida](docs/AE5_EMAIL_FUNCTION.md): contrato v1 estrito, MailKit, deadline compartilhado de três segundos, logs sanitizados e SAM privado com alias/catálogo separados. Regressão: 419 testes aprovados, incluindo 91 novos. Primeira invocação pelo SAM capturou mensagem; falha SMTP tratada e caixa efêmera do Compose conferidas. Os recursos locais foram encerrados. API/AuthFunction ainda serão conectadas nas AE.7/AE.6; workflows/publicação e comprovação AWS permanecem pendentes.

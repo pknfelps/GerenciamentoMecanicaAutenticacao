@@ -1,12 +1,12 @@
 # Autenticação e envio centralizado — organização planejada
 
-**22/10/2026 — contratos consolidados e estrutura AE.2 implementada; fluxo de código/e-mail ainda pendente.** O [plano central AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) substitui o Authorizer e o token por OS. GitHub/raiz/remote já se chamam GerenciamentoMecanicaServerless; autenticação atual preservada.
+**22/10/2026 — AE.1–AE.5 preparadas/validadas nos seus escopos; integração HTTP dos consumidores ainda pendente.** O [plano central AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) substitui o Authorizer e o token por OS. GitHub/raiz/remote já se chamam GerenciamentoMecanicaServerless; autenticação atual preservada.
 
 ## Organização e responsabilidades
 
 - Nome atual: GerenciamentoMecanicaServerless. Function/FunctionTests já foram movidos localmente para AuthFunction/AuthFunctionTests na AE.2. Preservar Domain/Application/Infrastructure da autenticação, sem obrigar renomeação ampla de assemblies/namespaces ou de recursos AWS existentes.
-- EmailFunction/EmailFunctionTests já têm estrutura local independente; composição/handler/transporte ainda serão implementados, com handler/ZIP/role/logs separados e sem referência ao domínio ou banco da autenticação. Uma solução e um repositório não significam execução ou privilégios compartilhados.
-- templates/auth.yaml administra somente a stack auth atual; templates/email.yaml será criado para a nova stack email em AE.5/AE.8. Configurações de deploy separadas; alteração/destroy de uma não administra a outra.
+- EmailFunction/EmailFunctionTests têm composição/handler/transporte implementados e validados localmente na AE.5, com handler/ZIP/role/logs separados e sem referência ao domínio ou banco da autenticação. Uma solução e um repositório não significam execução ou privilégios compartilhados.
+- templates/auth.yaml administra somente a stack auth atual; templates/email.yaml foi preparado na AE.5 para a stack email; integração aos workflows na AE.8. Configurações de deploy separadas; alteração/destroy de uma não administra a outra.
 - AuthFunction valida cliente, desafios e JWT e monta a mensagem do código. EmailFunction realiza o transporte SMTP de mensagens produzidas por API/auth. Não implementar SMTP nas duas origens, nem criar endpoint público de envio.
 
 ## Fluxo do cliente e captura
@@ -64,3 +64,13 @@ Advisory lock transacional por cliente, locks das linhas novas e relógio UTC do
 Restore/build Release, regressão de 309 testes (40 novos: 11 regras C# e 29 PostgreSQL), zero falhas/ignorados. Testes locais usam PostgreSQL 16.15/Testcontainers e grants explicitamente preparados na fixture; não substituem a [conferência separada do SQL real de grants](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/blob/develop/docs/AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md), concluída localmente. Detalhes, nomes de testes e limites: [operações transacionais](https://github.com/pknfelps/GerenciamentoMecanicaServerless/blob/develop/docs/AE3_OPERACOES_TRANSACIONAIS.md).
 
 O store ainda não está ligado ao handler/casos de uso HTTP, e não chama EmailFunction. Isso permanece na AE.6. Resultado de criação contém código/e-mail somente para uso interno e não deve ser serializado ou registrado no HTTP/log; a resposta pública será montada separadamente. Grants preparados e validados localmente; [Limpeza oportunista implementada e validada](AE3_LIMPEZA_EXPIRADOS.md), sem retenção extra de 24 horas e com até 100 expirados por tabela após commit. AE.3 concluída no escopo local; regressão completa final de 328 testes aprovada. Nenhuma alteração AWS, SQL/grants, IAM ou workflows nesta preparação.
+
+## AE.4 — preparação IAM do envio
+
+[Implementação e limites](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/AE4_IAM_EMAIL.md): runtime email e pipeline próprios por ambiente no bootstrap; API/auth recebem descoberta do contrato email/v1 e Invoke somente do alias live. O deploy email usará AWS_EMAIL_ROLE_ARN do Environment hom/prd, depois de apply aprovado e cadastro autorizado; não usará a role de deploy auth. A runtime email não recebe banco/JWT/Secrets nem lookup SSM por mensagem. Templates/workflows da função seguem na AE.5/AE.8; nenhum deles foi alterado nesta preparação. Não houve plano/apply, configuração GitHub ou chamada AWS autenticada. A role de CI existente permanece inalterada.
+
+## AE.5 — EmailFunction preparada e validada localmente
+
+[Implementação, comandos e evidências](AE5_EMAIL_FUNCTION.md). Contrato Invoke v1 estrito, transporte MailKit central, remetente fixo, budget de três segundos com reserva de resposta, erros/logs sanitizados e template SAM privado com alias live/catálogo email/v1. Nenhuma dependência de banco/JWT/auth no ZIP email. Restore/build Release, 419 testes (91 novos), SAM validate/build de ambos e pacotes linux-x64 conferidos. Primeira invocação isolada, reutilização, entrada inválida, SMTP indisponível e captura/perda após restart do Compose comprovados localmente; sem relay externo. Compose da API agora usa caixa em memória, sem alterar PostgreSQL.
+
+AE.5 concluída no escopo local; API/AuthFunction ainda não invocam EmailFunction. Próximo passo: AE.6, request-code/verify-code com store e Invoke. AE.7 conecta API, AE.8 integra publicação/workflows/Gateway e AE.10 comprova AWS após autorização. Não houve implantação, mudança de IAM/banco ou execução remota nesta etapa.
