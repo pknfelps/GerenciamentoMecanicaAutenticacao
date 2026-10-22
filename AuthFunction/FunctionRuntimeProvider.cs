@@ -15,17 +15,21 @@ public sealed class FunctionRuntimeProvider : IDisposable, IAsyncDisposable
         this.initialize = initialize;
     }
 
-    public async Task<CustomerAuthenticationResult> ExecuteAsync(string? document, CancellationToken cancellationToken)
+    public async Task<CustomerCodeRequestResponse> RequestCodeAsync(string? document, CancellationToken cancellationToken)
     {
         var context = await GetRuntimeAsync(cancellationToken);
-        
-        return await context.Authentication.ExecuteAsync(document, cancellationToken);
+        return await context.RequestCode.ExecuteAsync(document, cancellationToken);
+    }
+    public async Task<CustomerAuthenticationResult> VerifyCodeAsync(Guid challengeId, string? document, string? code, CancellationToken cancellationToken)
+    {
+        var context = await GetRuntimeAsync(cancellationToken);
+        return await context.VerifyCode.ExecuteAsync(challengeId, document, code, cancellationToken);
     }
 
     private async Task<FunctionRuntime> GetRuntimeAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        
+
         await gate.WaitAsync(cancellationToken);
 
         try

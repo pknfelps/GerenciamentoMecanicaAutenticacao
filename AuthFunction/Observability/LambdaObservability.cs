@@ -29,6 +29,7 @@ public sealed class LambdaObservability : IDisposable
     private readonly ILogger logger;
     private readonly InvocationMetrics? invocations;
     public IntegrationMetrics? Integrations { get; }
+    public ILogger<T> CreateLogger<T>() => services.GetRequiredService<ILoggerFactory>().CreateLogger<T>();
     private IDisposable? ownedConfiguration;
     private int disposed;
 
@@ -171,6 +172,7 @@ public sealed class LambdaObservability : IDisposable
     {
         var activity = Activity.Current;
         activity?.SetTag("http.response.status_code", status);
+        activity?.SetCustomProperty("Mecanica.Auth.Route", Http.AuthenticationRoute.Resolve(request));
         if (status >= 500)
             activity?.SetStatus(ActivityStatusCode.Error, settings.Collection.InvocationErrorMessage);
         else

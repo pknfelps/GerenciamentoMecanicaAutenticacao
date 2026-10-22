@@ -1,6 +1,6 @@
 # Autenticação e envio centralizado — organização planejada
 
-**22/10/2026 — AE.1–AE.5 preparadas/validadas nos seus escopos; integração HTTP dos consumidores ainda pendente.** O [plano central AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) substitui o Authorizer e o token por OS. GitHub/raiz/remote já se chamam GerenciamentoMecanicaServerless; autenticação atual preservada.
+**22/10/2026 — AE.1–AE.6 preparadas/validadas nos seus escopos; integração da API e publicação ainda pendentes.** O [plano central AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) substitui o Authorizer e o token por OS. GitHub/raiz/remote já se chamam GerenciamentoMecanicaServerless; autenticação atual preservada.
 
 ## Organização e responsabilidades
 
@@ -74,3 +74,9 @@ O store ainda não está ligado ao handler/casos de uso HTTP, e não chama Email
 [Implementação, comandos e evidências](AE5_EMAIL_FUNCTION.md). Contrato Invoke v1 estrito, transporte MailKit central, remetente fixo, budget de três segundos com reserva de resposta, erros/logs sanitizados e template SAM privado com alias live/catálogo email/v1. Nenhuma dependência de banco/JWT/auth no ZIP email. Restore/build Release, 419 testes (91 novos), SAM validate/build de ambos e pacotes linux-x64 conferidos. Primeira invocação isolada, reutilização, entrada inválida, SMTP indisponível e captura/perda após restart do Compose comprovados localmente; sem relay externo. Compose da API agora usa caixa em memória, sem alterar PostgreSQL.
 
 AE.5 concluída no escopo local; API/AuthFunction ainda não invocam EmailFunction. Próximo passo: AE.6, request-code/verify-code com store e Invoke. AE.7 conecta API, AE.8 integra publicação/workflows/Gateway e AE.10 comprova AWS após autorização. Não houve implantação, mudança de IAM/banco ou execução remota nesta etapa.
+
+## AE.6 — autenticação por código preparada e validada localmente
+
+[Contrato, composição e evidências](AE6_AUTENTICACAO_POR_CODIGO.md). Duas rotas estritas, sem emissão por documento isolado; store AE.3 integrado ao Invoke v1 da AE.5. Pending persistido antes do envio, Ready condicional após captura, invalidação best effort, confirmação/consumo atômicos e JWT atual sem dados extras. Descoberta em dois lotes SSM (9+2), alias do ambiente/contrato 1, MaxErrorRetry=0 e sem overrides de endpoint AWS. Mesmos limites de bootstrap, deadline e flush; nomes das duas rotas no manifesto e categorias code-requested/rate-limited.
+
+Restore/build Release sem avisos/erros, 438 testes sem falhas/ignorados, publish Linux/SAM de ambas conferidos. Fluxo handler/PostgreSQL/EmailFunction/SMTP4dev/confirmar/JWT comprovado localmente com AWS injetada, incluindo concorrência, erros e sanitização. O OpenAPI Serverless agora é 2.0.0; publicar coordenadamente com Gateway na AE.8. API permanece para AE.7. Sem SQL, IAM, workflows, planos/aplicações ou chamadas AWS nesta etapa.

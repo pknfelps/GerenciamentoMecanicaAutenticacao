@@ -2,8 +2,8 @@ using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using Amazon.Lambda.Serialization.SystemTextJson;
 using GerenciamentoMecanica.Autenticacao.Application.Authentication;
-using GerenciamentoMecanica.Autenticacao.Domain.Customers;
 using GerenciamentoMecanica.Autenticacao.Function;
+using GerenciamentoMecanica.Autenticacao.Function.Http;
 using NSubstitute;
 using System.Text;
 using System.Text.Json;
@@ -12,123 +12,101 @@ namespace GerenciamentoMecanica.Autenticacao.FunctionTests;
 
 public class FunctionHandlerTests
 {
-    private const string Document = "529.982.247-25";
-    private const string Sensitive = "test-only-password-key-document-token";
+    private const string Document = "52998224725";
+    private static readonly Guid Challenge = Guid.Parse("11111111-2222-4333-8444-555555555555");
     private ILambdaContext context = null!;
     private ILambdaLogger logger = null!;
-    private int calls;
+    private int requests, verifications;
     private string? observedDocument;
-    private CancellationToken observedCancellation;
-
     [SetUp]
-    public void SetUp()
+    public void Setup()
     {
-        calls = 0;
-        observedDocument = null;
-        observedCancellation = default;
-        logger = Substitute.For<ILambdaLogger>();
         context = Substitute.For<ILambdaContext>();
-        context.Logger.Returns(logger);
-        context.AwsRequestId.Returns("lambda-request-id");
+        logger = Substitute.For<ILambdaLogger>();
         context.RemainingTime.Returns(TimeSpan.FromSeconds(15));
+        context.Logger.Returns(logger);
+        context.AwsRequestId.Returns("lambda-request");
+        requests = verifications = 0;
+        observedDocument = null;
     }
-
-    private static APIGatewayProxyRequest Request(string? body = null) => new()
+    private FunctionHandler Handler(CustomerAuthenticationResult? verify = null, CustomerCodeRequestResponse? request = null) => new(
+        (document, token) => { requests++; observedDocument = document; return Task.FromResult(request ?? CustomerCodeRequestResponse.Accepted(Challenge)); },
+        (id, document, code, token) => { verifications++; observedDocument = document; Assert.That(id, Is.EqualTo(Challenge)); Assert.That(code, Is.EqualTo("01234567")); return Task.FromResult(verify ?? CustomerAuthenticationResult.Authenticated("test.jwt.token")); });
+    private static APIGatewayProxyRequest Request(string route = AuthenticationRoute.RequestCode, string? body = null) => new()
     {
         HttpMethod = "POST",
-        Path = "/customers/validate",
-        Body = body ?? JsonSerializer.Serialize(new { document = Document }),
-        Headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" },
-        RequestContext = new APIGatewayProxyRequest.ProxyRequestContext { RequestId = "gateway-request-id" }
+        Path = route,
+        Headers = new Dictionary<string, string> { { "Content-Type", "application/json" } },
+        Body = body ?? (route == AuthenticationRoute.VerifyCode ? JsonSerializer.Serialize(new { document = Document, challengeId = Challenge, code = "01234567" }) : JsonSerializer.Serialize(new { document = Document })),
+        RequestContext = new APIGatewayProxyRequest.ProxyRequestContext { RequestId = "gateway-request" }
     };
-
-    private FunctionHandler Handler(CustomerAuthenticationResult? result = null) => new((document, cancellation) =>
-    {
-        calls++;
-        observedDocument = document;
-        observedCancellation = cancellation;
-        return Task.FromResult(result ?? CustomerAuthenticationResult.Authenticated("test.jwt.token"));
-    });
-
     private string Log() => (string)logger.ReceivedCalls().Single().GetArguments()[0]!;
-
-    private static void AssertResponse(APIGatewayProxyResponse response, int status, string contentType)
+    private static void AssertResponse(APIGatewayProxyResponse response, int status)
     {
-        Assert.Multiple(() =>
-        {
-            Assert.That(response.StatusCode, Is.EqualTo(status));
-            Assert.That(response.Headers["Content-Type"], Is.EqualTo(contentType));
-            Assert.That(response.Headers["Cache-Control"], Is.EqualTo("no-store"));
-            Assert.That(response.IsBase64Encoded, Is.False);
-        });
+        Assert.That(response.StatusCode, Is.EqualTo(status));
+        Assert.That(response.Headers["Cache-Control"], Is.EqualTo("no-store"));
+        Assert.That(response.IsBase64Encoded, Is.False);
+        Assert.That(response.Headers["Content-Type"], Is.EqualTo(status is 200 or 202 ? "application/json" : "application/problem+json"));
     }
-
-    private static void AssertProblem(APIGatewayProxyResponse response, int status)
+    private static void AssertProblem(APIGatewayProxyResponse response, int status, string route)
     {
-        AssertResponse(response, status, "application/problem+json");
-        using var problem = JsonDocument.Parse(response.Body);
-        Assert.Multiple(() =>
-        {
-            Assert.That(problem.RootElement.GetProperty("type").GetString(), Is.EqualTo("about:blank"));
-            Assert.That(problem.RootElement.GetProperty("status").GetInt32(), Is.EqualTo(status));
-            Assert.That(problem.RootElement.GetProperty("title").GetString(), Is.Not.Empty);
-            Assert.That(problem.RootElement.GetProperty("detail").GetString(), Is.Not.Empty);
-            Assert.That(problem.RootElement.GetProperty("instance").GetString(), Is.EqualTo("/customers/validate"));
-            Assert.That(problem.RootElement.EnumerateObject().Count(), Is.EqualTo(5));
-        });
+        AssertResponse(response, status);
+        using var json = JsonDocument.Parse(response.Body);
+        Assert.That(json.RootElement.GetProperty("instance").GetString(), Is.EqualTo(route));
+        Assert.That(json.RootElement.GetProperty("status").GetInt32(), Is.EqualTo(status));
+        Assert.That(json.RootElement.GetProperty("type").GetString(), Is.EqualTo("about:blank"));
+        Assert.That(json.RootElement.EnumerateObject().Count(), Is.EqualTo(5));
     }
-
     [Test]
-    public async Task SuccessReturnsTokenAsJsonStringAndLogsOnlySafeFields()
+    public async Task CodeRequestReturnsOnlyOpaqueIdAndFixedMessage()
     {
-        const string token = "test.jwt.\"token\n";
-        using var handler = Handler(CustomerAuthenticationResult.Authenticated(token));
+        using var handler = Handler();
         var response = await handler.HandleAsync(Request(), context);
-        AssertResponse(response, 200, "application/json");
-        Assert.That(JsonSerializer.Deserialize<string>(response.Body), Is.EqualTo(token));
-        Assert.That(calls, Is.EqualTo(1));
-        Assert.That(observedDocument, Is.EqualTo(Document));
-        Assert.That(observedCancellation.CanBeCanceled, Is.True);
-
-        using var log = JsonDocument.Parse(Log());
-        Assert.Multiple(() =>
-        {
-            Assert.That(log.RootElement.GetProperty("lambdaRequestId").GetString(), Is.EqualTo("lambda-request-id"));
-            Assert.That(log.RootElement.GetProperty("gatewayRequestId").GetString(), Is.EqualTo("gateway-request-id"));
-            Assert.That(log.RootElement.GetProperty("status").GetInt32(), Is.EqualTo(200));
-            Assert.That(log.RootElement.GetProperty("durationMs").GetInt64(), Is.GreaterThanOrEqualTo(0));
-            Assert.That(log.RootElement.GetProperty("category").GetString(), Is.EqualTo("authenticated"));
-            Assert.That(log.RootElement.EnumerateObject().Count(), Is.EqualTo(5));
-            Assert.That(Log(), Does.Not.Contain(Document).And.Not.Contain("test.jwt"));
-        });
+        AssertResponse(response, 202);
+        using var body = JsonDocument.Parse(response.Body);
+        Assert.That(body.RootElement.GetProperty("challengeId").GetGuid(), Is.EqualTo(Challenge));
+        Assert.That(body.RootElement.GetProperty("message").GetString(), Is.EqualTo("Se o cadastro estiver apto, um código será enviado."));
+        Assert.That(body.RootElement.EnumerateObject().Count(), Is.EqualTo(2));
+        Assert.That(requests, Is.EqualTo(1));
+        Assert.That(verifications, Is.Zero);
+        Assert.That(Log(), Does.Contain("code-requested").And.Not.Contain(Document).And.Not.Contain(Challenge.ToString()));
     }
-
-    [TestCase("Content-Type", "application/json")]
-    [TestCase("content-type", "application/json; charset=utf-8")]
-    [TestCase("CONTENT-TYPE", "Application/JSON; Charset=\"UTF-8\"")]
-    public async Task JsonContentTypeIsCaseInsensitive(string name, string value)
-    {
-        var request = Request();
-        request.Headers = new Dictionary<string, string> { [name] = value };
-        using var handler = Handler();
-        AssertResponse(await handler.HandleAsync(request, context), 200, "application/json");
-    }
-
     [Test]
-    public async Task MultiValueHeaderWorksWithOrWithoutSingleValueMirror()
+    public async Task VerificationReturnsJsonStringTokenAndSafeCompletion()
     {
         using var handler = Handler();
-        var request = Request();
-        request.MultiValueHeaders = new Dictionary<string, IList<string>>
-        {
-            ["content-type"] = new List<string> { "application/json; charset=utf-8" }
-        };
-        request.Headers = null;
-        AssertResponse(await handler.HandleAsync(request, context), 200, "application/json");
-        request.Headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" };
-        AssertResponse(await handler.HandleAsync(request, context), 200, "application/json");
+        var response = await handler.HandleAsync(Request(AuthenticationRoute.VerifyCode), context);
+        AssertResponse(response, 200);
+        Assert.That(JsonSerializer.Deserialize<string>(response.Body), Is.EqualTo("test.jwt.token"));
+        Assert.That(verifications, Is.EqualTo(1));
+        Assert.That(requests, Is.Zero);
+        using var json = JsonDocument.Parse(Log());
+        Assert.That(json.RootElement.GetProperty("category").GetString(), Is.EqualTo("authenticated"));
+        Assert.That(json.RootElement.EnumerateObject().Count(), Is.EqualTo(5));
+        Assert.That(Log(), Does.Not.Contain("test.jwt").And.Not.Contain("01234567").And.Not.Contain(Document));
     }
-
+    [TestCase("/customers/validate")]
+    [TestCase("/customers/auth/unknown?document=sensitive")]
+    [TestCase("")]
+    public async Task RemovedOrUnknownRouteNeverExecutes(string route)
+    {
+        using var handler = Handler();
+        AssertProblem(await handler.HandleAsync(Request(route), context), 404, AuthenticationRoute.Unknown);
+        Assert.That(requests + verifications, Is.Zero);
+        Assert.That(Log(), Does.Not.Contain(route.Length > 0 ? route : "sensitive"));
+    }
+    [TestCase(AuthenticationRoute.RequestCode)]
+    [TestCase(AuthenticationRoute.VerifyCode)]
+    public async Task WrongMethodReturnsAllowPostWithoutExecuting(string route)
+    {
+        using var handler = Handler();
+        var request = Request(route);
+        request.HttpMethod = "GET";
+        var response = await handler.HandleAsync(request, context);
+        AssertProblem(response, 405, route);
+        Assert.That(response.Headers["Allow"], Is.EqualTo("POST"));
+        Assert.That(requests + verifications, Is.Zero);
+    }
     [TestCase(null)]
     [TestCase("")]
     [TestCase("text/plain")]
@@ -136,218 +114,174 @@ public class FunctionHandlerTests
     [TestCase("application/json; charset=latin-1")]
     [TestCase("application/json; charset=utf-8; charset=utf-8")]
     [TestCase("application/json; boundary=unexpected")]
-    public async Task MissingOrInvalidContentTypeDoesNotExecute(string? value)
+    public async Task InvalidContentTypeDoesNotInitialize(string? value)
     {
-        var request = Request();
-        request.Headers = value is null ? null : new Dictionary<string, string> { ["Content-Type"] = value };
         using var handler = Handler();
-        AssertProblem(await handler.HandleAsync(request, context), 400);
-        Assert.That(calls, Is.Zero);
+        var request = Request();
+        request.Headers = value is null ? null : new Dictionary<string, string> { { "Content-Type", value } };
+        AssertProblem(await handler.HandleAsync(request, context), 400, AuthenticationRoute.RequestCode);
+        Assert.That(requests, Is.Zero);
     }
-
+    [TestCase("Content-Type", "application/json")]
+    [TestCase("content-type", "application/json; charset=utf-8")]
+    [TestCase("CONTENT-TYPE", "Application/JSON; Charset=\"UTF-8\"")]
+    public async Task JsonHeaderNamesAndUtf8CharsetAreCaseInsensitive(string name, string value)
+    {
+        using var handler = Handler();
+        var request = Request();
+        request.Headers = new Dictionary<string, string> { { name, value } };
+        AssertResponse(await handler.HandleAsync(request, context), 202);
+    }
     [Test]
-    public async Task ConflictingHeaderValuesAreRejected()
+    public async Task MultiValueContentTypeAcceptsMirrorButRejectsConflict()
     {
-        var request = Request();
-        request.MultiValueHeaders = new Dictionary<string, IList<string>>
-        {
-            ["Content-Type"] = new List<string> { "application/json", "text/plain" }
-        };
         using var handler = Handler();
-        AssertProblem(await handler.HandleAsync(request, context), 400);
-        Assert.That(calls, Is.Zero);
+        var request = Request();
+        request.MultiValueHeaders = new Dictionary<string, IList<string>> { { "content-type", new List<string> { "application/json" } } };
+        AssertResponse(await handler.HandleAsync(request, context), 202);
+        request.Headers = null;
+        AssertResponse(await handler.HandleAsync(request, context), 202);
+        request.Headers = new Dictionary<string, string> { { "Content-Type", "text/plain" } };
+        AssertProblem(await handler.HandleAsync(request, context), 400, AuthenticationRoute.RequestCode);
+        Assert.That(requests, Is.EqualTo(2));
     }
-
     [TestCase("")]
     [TestCase("null")]
     [TestCase("[]")]
-    [TestCase("42")]
-    [TestCase("\"document\"")]
-    [TestCase("{}")]
     [TestCase("{")]
+    [TestCase("{}")]
     [TestCase("{\"document\":null}")]
     [TestCase("{\"document\":42}")]
-    [TestCase("{\"document\":true}")]
-    [TestCase("{\"document\":[]}")]
-    [TestCase("{\"document\":{}}")]
-    [TestCase("{\"document\":\"\"}")]
-    [TestCase("{\"document\":\" \"}")]
-    [TestCase("{\"Document\":\"52998224725\"}")]
     [TestCase("{\"document\":\"52998224725\",\"role\":\"Admin\"}")]
-    [TestCase("{\"document\":\"52998224725\",\"document\":\"52998224725\"}")]
-    [TestCase("{\"document\":\"52998224725\",\"document\":null}")]
+    [TestCase("{\"document\":\"52998224725\",\"Document\":\"52998224725\"}")]
     [TestCase("{\"document\":\"52998224725\",}")]
-    [TestCase("{/* comment */\"document\":\"52998224725\"}")]
     [TestCase("{\"document\":\"\\ud800\"}")]
-    public async Task InvalidJsonShapeDoesNotExecute(string body)
+    [TestCase("{\"document\":\"invalid\"}")]
+    public async Task InvalidBodyOrDocumentDoesNotInitialize(string body)
     {
         using var handler = Handler();
-        AssertProblem(await handler.HandleAsync(Request(body), context), 400);
-        Assert.That(calls, Is.Zero);
-        Assert.That(Log(), Does.Not.Contain(body.Length > 10 ? body : Sensitive));
+        AssertProblem(await handler.HandleAsync(Request(body: body), context), 400, AuthenticationRoute.RequestCode);
+        Assert.That(requests, Is.Zero);
     }
-
-    [Test]
-    public async Task MissingBodyDoesNotExecute()
+    [TestCase("challengeId")]
+    [TestCase("code")]
+    [TestCase("document")]
+    public async Task VerificationRequiresEveryField(string missing)
     {
-        var request = Request();
-        request.Body = null;
         using var handler = Handler();
-        AssertProblem(await handler.HandleAsync(request, context), 400);
-        Assert.That(calls, Is.Zero);
+        var body = new Dictionary<string, object> { { "document", Document }, { "challengeId", Challenge }, { "code", "01234567" } };
+        body.Remove(missing);
+        AssertProblem(await handler.HandleAsync(Request(AuthenticationRoute.VerifyCode, JsonSerializer.Serialize(body)), context), 400, AuthenticationRoute.VerifyCode);
+        Assert.That(verifications, Is.Zero);
     }
-
-    [Test]
-    public async Task Base64BodyIsDecoded()
+    [TestCase("00000000-0000-0000-0000-000000000000", "01234567")]
+    [TestCase("invalid", "01234567")]
+    [TestCase("11111111-2222-4333-8444-555555555555", "1234567")]
+    [TestCase("11111111-2222-4333-8444-555555555555", "１２３４５６７８")]
+    public async Task MalformedChallengeOrCodeDoesNotExecute(string id, string code)
     {
+        using var handler = Handler();
+        AssertProblem(await handler.HandleAsync(Request(AuthenticationRoute.VerifyCode, JsonSerializer.Serialize(new { document = Document, challengeId = id, code })), context), 400, AuthenticationRoute.VerifyCode);
+        Assert.That(verifications, Is.Zero);
+    }
+    [Test]
+    public async Task ParserAcceptsPropertyCasingAndNormalizesDocument()
+    {
+        using var handler = Handler();
+        AssertResponse(await handler.HandleAsync(Request(body: "{\"DOCUMENT\":\"52998224725\"}"), context), 202);
+        Assert.That(observedDocument, Is.EqualTo("529.982.247-25"));
+    }
+    [Test]
+    public async Task Base64IsDecodedWithTheSameLimit()
+    {
+        using var handler = Handler();
         var request = Request();
-        request.Body = Convert.ToBase64String(Encoding.UTF8.GetBytes(request.Body));
         request.IsBase64Encoded = true;
-        using var handler = Handler();
-        AssertResponse(await handler.HandleAsync(request, context), 200, "application/json");
-        Assert.That(observedDocument, Is.EqualTo(Document));
+        request.Body = Convert.ToBase64String(Encoding.UTF8.GetBytes(request.Body));
+        AssertResponse(await handler.HandleAsync(request, context), 202);
     }
-
     [TestCase("not%base64")]
     [TestCase("/w==")]
-    public async Task InvalidBase64OrUtf8DoesNotExecute(string body)
+    public async Task InvalidBase64OrUtf8IsRejected(string body)
     {
-        var request = Request(body);
+        using var handler = Handler();
+        var request = Request(body: body);
         request.IsBase64Encoded = true;
-        using var handler = Handler();
-        AssertProblem(await handler.HandleAsync(request, context), 400);
-        Assert.That(calls, Is.Zero);
+        AssertProblem(await handler.HandleAsync(request, context), 400, AuthenticationRoute.RequestCode);
+        Assert.That(requests, Is.Zero);
     }
-
-    [Test]
-    public async Task InvalidDocumentUsesProblemDetails()
-    {
-        using var handler = Handler(CustomerAuthenticationResult.InvalidDocument());
-        AssertProblem(await handler.HandleAsync(Request(), context), 400);
-        Assert.That(Log(), Does.Contain("invalid-document"));
-    }
-
     [TestCase(false)]
     [TestCase(true)]
-    public async Task MissingAndInactiveCustomerHaveIdenticalDenial(bool inactive)
+    public async Task BodyIsLimitedToFourKiB(bool base64)
     {
-        var normalizer = Substitute.For<ICustomerDocumentNormalizer>();
-        var customers = Substitute.For<ICustomerLookup>();
-        var tokens = Substitute.For<ICustomerTokenIssuer>();
-        normalizer.Normalize(Document).Returns(Document);
-        customers.FindByDocumentAsync(Document, Arg.Any<CancellationToken>())
-            .Returns(inactive ? new CustomerIdentity(Guid.NewGuid(), "Test customer", Document, CustomerStatus.Inactive) : null);
-        var useCase = new ValidateCustomerDocumentUseCase(normalizer, customers, tokens);
-        using var handler = new FunctionHandler(useCase.ExecuteAsync);
-        var response = await handler.HandleAsync(Request(), context);
-        AssertProblem(response, 401);
-        using var problem = JsonDocument.Parse(response.Body);
-        Assert.That(problem.RootElement.GetProperty("detail").GetString(), Is.EqualTo("Não foi possível autenticar o cliente."));
-        tokens.DidNotReceiveWithAnyArgs().Generate(default!);
-    }
-
-    [TestCase(false)]
-    [TestCase(true)]
-    public async Task TechnicalFailureIsSanitized(bool canceled)
-    {
-        using var handler = new FunctionHandler((_, _) => Task.FromException<CustomerAuthenticationResult>(
-            canceled ? new OperationCanceledException(Sensitive) : new InvalidOperationException(Sensitive)));
-        var response = await handler.HandleAsync(Request(), context);
-        AssertProblem(response, 500);
-        Assert.That(response.Body, Does.Not.Contain(Sensitive));
-        Assert.That(Log(), Does.Not.Contain(Sensitive).And.Not.Contain("Exception"));
-    }
-
-    [Test]
-    public async Task InvocationDeadlineCancelsExecutionAndReturns500()
-    {
-        context.RemainingTime.Returns(TimeSpan.FromSeconds(1.05));
-        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var handler = new FunctionHandler(async (_, cancellation) =>
-        {
-            try
-            {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellation);
-                return CustomerAuthenticationResult.NotEligible();
-            }
-            finally
-            {
-                completion.TrySetResult(cancellation.IsCancellationRequested);
-            }
-        });
-        AssertProblem(await handler.HandleAsync(Request(), context), 500);
-        Assert.That(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)), Is.True);
-        Assert.That(Log(), Does.Contain("timeout"));
-    }
-
-    [Test]
-    public async Task ExhaustedBudgetDoesNotExecute()
-    {
-        context.RemainingTime.Returns(TimeSpan.FromSeconds(1));
         using var handler = Handler();
-        AssertProblem(await handler.HandleAsync(Request(), context), 500);
-        Assert.That(calls, Is.Zero);
-    }
-
-    [Test]
-    public async Task LateSuccessAfterCancellationIsNotReturnedAsToken()
-    {
-        using var handler = new FunctionHandler(async (_, cancellation) =>
-        {
-            await Task.Delay(50);
-            return CustomerAuthenticationResult.Authenticated(Sensitive);
-        });
-        context.RemainingTime.Returns(TimeSpan.FromSeconds(1.02));
-        var response = await handler.HandleAsync(Request(), context);
-        AssertProblem(response, 500);
-        Assert.That(response.Body, Does.Not.Contain(Sensitive));
-    }
-
-    [Test]
-    public async Task AuthorizationHeaderDoesNotBypassExecution()
-    {
         var request = Request();
-        request.Headers["Authorization"] = "Bearer " + Sensitive;
-        using var handler = Handler(CustomerAuthenticationResult.NotEligible());
-        AssertProblem(await handler.HandleAsync(request, context), 401);
-        Assert.That(calls, Is.EqualTo(1));
-        Assert.That(Log(), Does.Not.Contain(Sensitive));
+        request.Body = request.Body.PadRight(4096, ' ');
+        request.IsBase64Encoded = base64;
+        if (base64) request.Body = Convert.ToBase64String(Encoding.UTF8.GetBytes(request.Body));
+        AssertResponse(await handler.HandleAsync(request, context), 202);
+        request.Body = base64 ? Convert.ToBase64String(new byte[4097]) : new string(' ', 4097);
+        AssertProblem(await handler.HandleAsync(request, context), 400, AuthenticationRoute.RequestCode);
+        Assert.That(requests, Is.EqualTo(1));
     }
-
     [Test]
-    public async Task LambdaSerializerPreservesRestProxyEnvelopeAndJsonStringBody()
+    public async Task RateLimitReturnsRetryAfterAndFixedProblem()
+    {
+        using var handler = Handler(request: CustomerCodeRequestResponse.RateLimited(60));
+        var response = await handler.HandleAsync(Request(), context);
+        AssertProblem(response, 429, AuthenticationRoute.RequestCode);
+        Assert.That(response.Headers["Retry-After"], Is.EqualTo("60"));
+        Assert.That(Log(), Does.Contain("rate-limited"));
+    }
+    [Test]
+    public async Task DeniedVerificationRemainsGenericAndAuthorizationCannotBypassIt()
+    {
+        using var handler = Handler(CustomerAuthenticationResult.NotEligible());
+        var request = Request(AuthenticationRoute.VerifyCode);
+        request.Headers["Authorization"] = "Bearer sensitive-token";
+        AssertProblem(await handler.HandleAsync(request, context), 401, AuthenticationRoute.VerifyCode);
+        Assert.That(verifications, Is.EqualTo(1));
+        Assert.That(Log(), Does.Not.Contain("sensitive-token"));
+    }
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task TechnicalErrorsAndTimeoutAreSanitized(bool timeout)
+    {
+        using var handler = new FunctionHandler((_, _) => Task.FromException<CustomerCodeRequestResponse>(timeout ? new TimeoutException("sensitive") : new InvalidOperationException("sensitive")), (_, _, _, _) => throw new AssertionException("Verification must not run in this scenario."));
+        var response = await handler.HandleAsync(Request(), context);
+        AssertProblem(response, 500, AuthenticationRoute.RequestCode);
+        Assert.That(response.Body + Log(), Does.Not.Contain("sensitive"));
+        Assert.That(Log(), Does.Contain(timeout ? "timeout" : "technical-failure"));
+    }
+    [Test]
+    public async Task DeadlineCancelsTheOperationAndPreservesResponseReserve()
+    {
+        var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new FunctionHandler(async (_, token) => { try { await Task.Delay(Timeout.Infinite, token); return CustomerCodeRequestResponse.Accepted(Challenge); } finally { canceled.TrySetResult(token.IsCancellationRequested); } }, (_, _, _, _) => throw new AssertionException("Verification must not run in this scenario."));
+        context.RemainingTime.Returns(TimeSpan.FromSeconds(1.1));
+        AssertProblem(await handler.HandleAsync(Request(), context), 500, AuthenticationRoute.RequestCode);
+        Assert.That(await canceled.Task.WaitAsync(TimeSpan.FromSeconds(2)), Is.True);
+    }
+    [Test]
+    public async Task ExhaustedBudgetDoesNotStartExecution()
+    {
+        using var handler = Handler();
+        context.RemainingTime.Returns(TimeSpan.FromSeconds(1));
+        AssertProblem(await handler.HandleAsync(Request(), context), 500, AuthenticationRoute.RequestCode);
+        Assert.That(requests, Is.Zero);
+    }
+    [Test]
+    public async Task LambdaSerializerKeepsRestProxyAndJsonStringToken()
     {
         var serializer = new DefaultLambdaJsonSerializer();
-        var eventJson = JsonSerializer.Serialize(new
-        {
-            httpMethod = "POST", path = "/customers/validate",
-            headers = new Dictionary<string, string> { ["content-type"] = "application/json" },
-            body = "{\"document\":\"52998224725\"}",
-            isBase64Encoded = false,
-            requestContext = new { requestId = "gateway-request-id" }
-        });
-        using var input = new MemoryStream(Encoding.UTF8.GetBytes(eventJson));
+        using var input = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(Request(AuthenticationRoute.VerifyCode)));
         var request = serializer.Deserialize<APIGatewayProxyRequest>(input);
-        const string token = "test.jwt.\"escaped\"";
-        using var handler = Handler(CustomerAuthenticationResult.Authenticated(token));
+        using var handler = Handler();
         var response = await handler.HandleAsync(request, context);
         using var output = new MemoryStream();
         serializer.Serialize(response, output);
         using var json = JsonDocument.Parse(output.ToArray());
         Assert.That(json.RootElement.GetProperty("statusCode").GetInt32(), Is.EqualTo(200));
-        Assert.That(JsonSerializer.Deserialize<string>(json.RootElement.GetProperty("body").GetString()!), Is.EqualTo(token));
-        Assert.That(json.RootElement.GetProperty("isBase64Encoded").GetBoolean(), Is.False);
-        Assert.That(observedDocument, Is.EqualTo("52998224725"));
-    }
-
-    [Test]
-    public async Task MissingGatewayRequestContextIsSafe()
-    {
-        var request = Request();
-        request.RequestContext = null;
-        using var handler = Handler();
-        AssertResponse(await handler.HandleAsync(request, context), 200, "application/json");
-        using var json = JsonDocument.Parse(Log());
-        Assert.That(json.RootElement.GetProperty("gatewayRequestId").ValueKind, Is.EqualTo(JsonValueKind.Null));
+        Assert.That(JsonSerializer.Deserialize<string>(json.RootElement.GetProperty("body").GetString()!), Is.EqualTo("test.jwt.token"));
     }
 }

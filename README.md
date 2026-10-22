@@ -1,8 +1,8 @@
 # Funções serverless da oficina
 
-> **Extra em revisão — 22/10/2026:** a implementação local LA.1 de Authorizer/token de orçamento foi substituída como desenho pelo [fluxo planejado de código e SMTP4dev](docs/AUTENTICACAO_E_EMAIL_PLANEJADO.md). O mantenedor descartou o código LA.1, preservando a documentação. As seções abaixo foram alinhadas à base atual por documento; AE.3 preparou o store transacional e AE.5 implementou o transporte EmailFunction local; a integração HTTP/Invoke dos consumidores segue nas AE.6/AE.7. GitHub, pasta raiz e remote já usam GerenciamentoMecanicaServerless; AuthFunction preserva os nomes de assembly/namespace existentes.
+> **Extra AE — 22/10/2026:** AE.1–AE.6 preparadas e validadas nos seus escopos. EmailFunction e autenticação por código estão implementadas localmente; publicação/Gateway e integração da API seguem nas AE.8/AE.7. [Fluxo e evidências AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Checklists oficiais preservados.
 
-Lambda .NET 10 que valida CPF/CNPJ numérico, consulta elegibilidade pelo documento e emite JWT Customer. O novo fluxo por código substituirá essa emissão por documento isolado. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
+AuthFunction .NET 10 autentica por documento e código de uso único, com desafio PostgreSQL e envio por Invoke à EmailFunction. EmailFunction concentra SMTP/MIME e captura no SMTP4dev, sem relay externo. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
 
 ## Estado e escopo
 
@@ -24,46 +24,24 @@ Função/SAM/Gateway/JWT/SQL e telemetria foram implantados e conferidos em **ho
 
 Projetos net10.0, Npgsql 10.0.2/Dapper e pacote Auth.Contracts [1.0.0]. SAM CLI 1.167.0/CloudFormation entrega ZIP linux-x64/framework-dependent, runtime dotnet10/x86_64, 512 MB e timeout 15 s. Não há Dockerfile da função nem novo executável local; [Compose](compose.observability.yaml) inicia somente Collector para conferência manual.
 
-```mermaid
-sequenceDiagram
-    participant C as Cliente
-    participant G as Gateway REST
-    participant F as Lambda
-    participant R as Runtime reutilizável
-    participant D as RDS PostgreSQL
-    participant A as API da oficina
-    C->>G: POST /customers/validate com documento
-    G->>F: Proxy para versão numérica
-    F->>F: Validar estrutura do corpo
-    F->>R: Inicialização tardia quando necessária
-    R->>R: Validar e normalizar documento antes da consulta
-    R->>D: Consulta customers pelo documento, sem pooling
-    D-->>F: Cadastro e status
-    F-->>C: Via Gateway: 200 com JWT ou 400/401/500
-    C->>G: Status ou orçamento da própria OS com Bearer
-    G->>A: VPC Link V2 e NLB interno
-    A->>A: Validar JWT, perfil e titularidade da OS
-    A-->>C: Via Gateway: resposta autorizada
-```
-
-A sequência acima resume o caminho; a [sequência detalhada](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/diagramas/VALIDACAO_CPF.md) distingue parsing antes do runtime e validação do documento no caso de uso após inicialização. A função não cria cliente/usuário/OS, não envia notificações e não administra schema.
+O código local implementa [request-code/verify-code e envio central](docs/AE6_AUTENTICACAO_POR_CODIGO.md). As evidências AWS anteriores descrevem a revisão antiga; não comprovam implantação do novo contrato.
 
 ## Contrato HTTP/JWT
 
-[contracts/openapi.json](contracts/openapi.json), OpenAPI 3.0 estático, define `POST /customers/validate`. Não exige token prévio; esse caminho será substituído pelas duas rotas AE. Corpo JSON com apenas document, string não vazia; Content-Type application/json com charset UTF-8 opcional. Propriedades extras/duplicadas, JSON/Base64/UTF-8 inválidos e tipos incorretos retornam 400 antes do bootstrap de autenticação.
+[contracts/openapi.json](contracts/openapi.json), versão 2.0.0, substitui POST /customers/validate por:
 
-CPF de 11 dígitos ou máscara e CNPJ numérico de 14 dígitos ou máscara são normalizados estritamente; sem espaços/letras/CNPJ alfanumérico. Validação usa o pacote compartilhado, sem mudar seu algoritmo legado. Corpo válido pode inicializar o runtime mesmo com documento posteriormente rejeitado; documento inválido não consulta SQL.
+| Rota | Entrada | Sucesso |
+|---|---|---|
+| POST /customers/auth/request-code | document | 202 com challengeId opaco e mensagem genérica, sem código |
+| POST /customers/auth/verify-code | challengeId, code, document | 200 com string JSON JWT Customer |
 
-| HTTP | Resposta |
-|---|---|
-| 200 | Token como string JSON, sem envelope/refresh token |
-| 400 | Corpo ou documento inválido |
-| 401 | Cliente inexistente ou Inactive; negativa genérica |
-| 500 | Falha técnica/timeout tratado, incluindo configuração/SQL/cancelamento |
+JSON UTF-8 estrito de até 4 KiB, inclusive base64, sem extras/duplicações/null. Propriedades comparadas sem distinção de maiúsculas. Documento normalizado pelo pacote antes do bootstrap; código com oito dígitos ASCII e UUID não vazio. Entradas inválidas não inicializam AWS ou SQL. Authorization não evita a verificação. Erros fixos 400/401/429/500 em problem+json; Retry-After no limite; no-store em todas as respostas.
 
-Sucesso usa application/json; erros tratados usam application/problem+json, campos fixos e instance=/customers/validate. Todas as respostas têm Cache-Control: no-store e isBase64Encoded=false. Erros do próprio Gateway/runtime podem ter formato diferente. No código atual, documento é a entrada da autenticação e não há credencial por OS ou Authorizer. O fluxo AE removerá esse caminho sem manter bypass do código.
+Cliente ausente/Inactive/sem e-mail utilizável recebe 202 sem escrita/limpeza/envio. Cliente elegível persiste Pending antes do Invoke e só vira Ready após captura confirmada. Falha invalida quando possível sem mascarar a original; Pending nunca autentica. Cooldown de 60 s, cinco pedidos/hora, validade de cinco minutos e cinco tentativas; consumo atômico, sem transação aberta durante envio.
 
-JWT atual HS256 com UUID/nome do cadastro, role Customer e expiração de dez minutos, sem order_id/purpose de orçamento. A API atual mantém tolerância de cinco minutos e titularidade; Active após login e ClockSkew zero são mudanças futuras da AE. O [contrato atual](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) permanece distinto do [contrato extra consolidado](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md). Não há refresh/revogação automática.
+JWT HS256 mantém UUID/nome cadastrado, role Customer e dez minutos, sem documento, e-mail, código, challengeId ou OS. Assinatura/consumo só retornam token após commit; sem refresh/replay/garantia de entrega única. A API aplica titularidade e regras de OS; Active/ClockSkew zero e decisão explícita serão implementados na AE.7.
+
+A rota antiga/desconhecida retorna 404 no handler; método incorreto retorna 405/Allow: POST. **Publicar coordenadamente na AE.8:** o Gateway atual ainda precisa ser adaptado às duas rotas, sem Authorizer. Contrato/handler novo não deve ser provisionado isoladamente no Gateway antigo.
 
 ## Consumo do Auth.Contracts
 
@@ -94,7 +72,7 @@ sam validate --lint --template-file templates/auth.yaml --region us-east-1
 sam build --template-file templates/auth.yaml
 ```
 
-Publish local não implanta recursos. Conferir DLL/deps/runtimeconfig, Certificates/rds-ca.pem e Observability/observability.json/collector.yaml. Testes do handler são a execução integrada local, sem criar servidor/executável próprio. Testes automatizados de transporte/Collector/telemetria da Lambda foram removidos por decisão; testes funcionais e MeterListener de integrações permanecem.
+Publish local não implanta recursos. Conferir DLL/deps/runtimeconfig, Certificates/rds-ca.pem e Observability/observability.json/collector.yaml. Testes do handler são a execução integrada local, sem criar servidor/executável próprio. [Roteiro e resultados AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Testes automatizados de transporte/Collector/telemetria da Lambda foram removidos por decisão; testes funcionais e MeterListener de integrações permanecem.
 
 ## Inicialização e persistência
 
@@ -114,7 +92,7 @@ Somente W3C traceparent seleciona pai OTLP; runtime/cabeçalho X-Ray não são p
 
 Layer Collector 0.22.0 (Collector 0.151.0) recebe OTLP em loopback e usa decouple, sem batch periódico adicional. Flush da aplicação compartilha até 500 ms entre sinais e preserva ao menos 500 ms para resposta. Filas limitadas/freeze/encerramento podem perder dados; sem entrega única/replay. Extensão lê License Key do Secrets Manager pela mesma role da função, sem chave em ZIP/variáveis/pipeline.
 
-Mecanica.Auth mede invocações/duração por resultado; Mecanica.Integrations mede acessos PostgreSQL/SSM/Secrets, separando operação/finalidade/resultado. Uma chamada lógica AWS é contada depois dos retries internos, não por tentativa de transporte. [Procedimento](docs/OBSERVABILIDADE_LOCAL.md), [integrações](docs/METRICAS_INTEGRACOES.md) e [limites aceitos E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md).
+Mecanica.Auth mede solicitações de código e confirmações/duração por resultado (incluindo code-requested/rate-limited); seu total não é número de logins, que requer outcome=authenticated; Mecanica.Integrations mede acessos PostgreSQL/SSM/Secrets, separando operação/finalidade/resultado. Uma chamada lógica AWS é contada depois dos retries internos, não por tentativa de transporte. [Procedimento](docs/OBSERVABILIDADE_LOCAL.md), [integrações](docs/METRICAS_INTEGRACOES.md) e [limites aceitos E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md).
 
 ## Workflows, artefatos e operação AWS
 
@@ -139,9 +117,9 @@ O endpoint de negócio, quando provisionado, vem de /mecanica/ambiente/gateway/v
 
 ## Refinamento extra — autenticação do cliente e envio centralizado
 
-**Decisão vigente de 22/10/2026; implementação pendente.** O cliente solicitará um código em request-code e confirmará challengeId/code/document em verify-code. O código será enviado a SMTP4dev privado e consultado na ferramenta de captura, nunca devolvido no endpoint público ou gerado pelo mecânico. Depois, JWT Customer identifica o cliente e permite acessar suas próprias OSs; sem Authorizer/token por OS. Sem entrega real a caixas pessoais. Mensagens são efêmeras; desafios permanecem no PostgreSQL.
+**Decisão vigente de 22/10/2026; AE.6 implementada e validada localmente, publicação pendente.** O cliente solicitará um código em request-code e confirmará challengeId/code/document em verify-code. O código será enviado a SMTP4dev privado e consultado na ferramenta de captura, nunca devolvido no endpoint público ou gerado pelo mecânico. Depois, JWT Customer identifica o cliente e permite acessar suas próprias OSs; sem Authorizer/token por OS. Sem entrega real a caixas pessoais. Mensagens são efêmeras; desafios permanecem no PostgreSQL.
 
-AE.2: solução GerenciamentoMecanicaServerless, AuthFunction/AuthFunctionTests e estrutura EmailFunction/EmailFunctionTests criadas; template auth em templates/auth.yaml. GitHub/raiz/remote renomeados em 22/10/2026; transição OIDC inicial aplicada, proteções/Environments conferidos e auth-ci do novo nome aprovado. Plano final de retirada da confiança antiga aprovado/aplicado, policies conferidas e Terraform posterior sem diferenças; AE.2 concluída. Template/stack/workflows e funcionamento email continuam nas etapas futuras. LA.1 é somente histórico; AE.1 está consolidada.
+AE.2: solução GerenciamentoMecanicaServerless, AuthFunction/AuthFunctionTests e estrutura EmailFunction/EmailFunctionTests criadas; template auth em templates/auth.yaml. GitHub/raiz/remote renomeados em 22/10/2026; transição OIDC inicial aplicada, proteções/Environments conferidos e auth-ci do novo nome aprovado. Plano final de retirada da confiança antiga aprovado/aplicado, policies conferidas e Terraform posterior sem diferenças; AE.2 concluída. Handler/template email e fluxo auth foram preparados nas AE.5/AE.6; workflows/publicação permanecem nas AE.8/AE.10. LA.1 é somente histórico; AE.1 está consolidada.
 
 API/auth invocarão somente a função de envio autorizada pelo IAM; essa função concentra SMTP e não acessa o banco/JWT. A API mantém titularidade/Active e regras da OS. A ordem de publicação/descarte e as permissões novas serão preparadas antes da ativação. A migração estrutural AE.2 não implementou o fluxo de código/e-mail; preservou as proteções GitHub e as permissões funcionais existentes.
 
@@ -163,3 +141,7 @@ AE.3 revisada: tabelas no Init.sql do banco vazio, sem migrations nem regras de 
 ## AE.5 — envio central preparado localmente
 
 [EmailFunction implementada e conferida](docs/AE5_EMAIL_FUNCTION.md): contrato v1 estrito, MailKit, deadline compartilhado de três segundos, logs sanitizados e SAM privado com alias/catálogo separados. Regressão: 419 testes aprovados, incluindo 91 novos. Primeira invocação pelo SAM capturou mensagem; falha SMTP tratada e caixa efêmera do Compose conferidas. Os recursos locais foram encerrados. API/AuthFunction ainda serão conectadas nas AE.7/AE.6; workflows/publicação e comprovação AWS permanecem pendentes.
+
+## AE.6 — autenticação por código concluída localmente
+
+[Implementação, testes e limites](docs/AE6_AUTENTICACAO_POR_CODIGO.md): duas rotas, store transacional integrado, Invoke v1 sem retry, descoberta email/v1, logs/spans fixos e 438 testes aprovados. Fluxo com PostgreSQL/SMTP4dev reais comprovado localmente, com bootstrap/Invoke AWS injetados. Pacotes/SAM conferidos, sem deploy. Próximo passo: AE.7, integração e regras Customer da API.

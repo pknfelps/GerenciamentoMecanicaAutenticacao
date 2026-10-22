@@ -3,6 +3,7 @@ namespace GerenciamentoMecanica.Autenticacao.Function.Observability;
 public sealed class TelemetryCollectionOptions
 {
     public string InvocationSpanName { get; init; } = "";
+    public Dictionary<string, string> InvocationSpanNames { get; init; } = [];
     public string DatabaseSpanName { get; init; } = "";
     public string InvocationErrorMessage { get; init; } = "";
     public string DatabaseErrorMessage { get; init; } = "";
@@ -17,6 +18,9 @@ public sealed class TelemetryCollectionOptions
     {
         if (new[] { InvocationSpanName, DatabaseSpanName, InvocationErrorMessage, DatabaseErrorMessage, ExportFailureMessage }
                 .Any(string.IsNullOrWhiteSpace)
+            || InvocationSpanNames.Count != 2
+            || !InvocationSpanNames.Keys.ToHashSet().SetEquals(new[] { Http.AuthenticationRoute.RequestCode, Http.AuthenticationRoute.VerifyCode })
+            || InvocationSpanNames.Values.Any(string.IsNullOrWhiteSpace)
             || InvocationAttributes.Count == 0 || DatabaseAttributes.Count == 0 || ExceptionAttributes.Count == 0
             || MetricAttributes.Length == 0 || MetricAttributes.Any(key => key is not ("outcome" or "http.response.status_code"))
             || DurationBoundariesSeconds.Length == 0

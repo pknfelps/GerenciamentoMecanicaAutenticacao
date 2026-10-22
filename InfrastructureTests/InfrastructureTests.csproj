@@ -17,5 +17,6 @@
   <ItemGroup>
     <ProjectReference Include="../Infrastructure/Infrastructure.csproj" />
     <ProjectReference Include="../AuthFunction/AuthFunction.csproj" />
+    <ProjectReference Include="../EmailFunction/EmailFunction.csproj" />
   </ItemGroup>
 </Project>

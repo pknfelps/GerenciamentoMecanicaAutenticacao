@@ -13,31 +13,36 @@ public sealed class FunctionHandler : IDisposable, IAsyncDisposable
 {
     private readonly FunctionRuntimeProvider? runtime;
     private readonly LambdaObservability? observability;
-    private readonly Func<string?, CancellationToken, Task<CustomerAuthenticationResult>> execute;
+    private readonly Func<string?, CancellationToken, Task<CustomerCodeRequestResponse>> requestCode;
+    private readonly Func<Guid, string?, string?, CancellationToken, Task<CustomerAuthenticationResult>> verifyCode;
 
     public FunctionHandler() : this(LambdaObservability.CreateDefault())
     {
     }
 
     private FunctionHandler(LambdaObservability? observability) : this(
-        new FunctionRuntimeProvider(new FunctionBootstrap(observability?.Integrations).InitializeAsync), observability)
+        new FunctionRuntimeProvider(new FunctionBootstrap(observability?.Integrations, observability?.CreateLogger<Infrastructure.Persistence.PostgreSqlCustomerAccessStore>()).InitializeAsync), observability)
     {
     }
 
     public FunctionHandler(FunctionRuntimeProvider runtime, LambdaObservability? observability = null)
     {
         ArgumentNullException.ThrowIfNull(runtime);
-        
+
         this.runtime = runtime;
         this.observability = observability;
-        execute = runtime.ExecuteAsync;
+        requestCode = runtime.RequestCodeAsync;
+        verifyCode = runtime.VerifyCodeAsync;
     }
 
-    public FunctionHandler(Func<string?, CancellationToken, Task<CustomerAuthenticationResult>> execute, LambdaObservability? observability = null)
+    public FunctionHandler(Func<string?, CancellationToken, Task<CustomerCodeRequestResponse>> requestCode,
+        Func<Guid, string?, string?, CancellationToken, Task<CustomerAuthenticationResult>> verifyCode,
+        LambdaObservability? observability = null)
     {
-        ArgumentNullException.ThrowIfNull(execute);
-        
-        this.execute = execute;
+        ArgumentNullException.ThrowIfNull(requestCode);
+        ArgumentNullException.ThrowIfNull(verifyCode);
+        this.requestCode = requestCode;
+        this.verifyCode = verifyCode;
         this.observability = observability;
     }
 
@@ -48,46 +53,37 @@ public sealed class FunctionHandler : IDisposable, IAsyncDisposable
     private async Task<APIGatewayProxyResponse> HandleCoreAsync(APIGatewayProxyRequest request, ILambdaContext context)
     {
         var elapsed = Stopwatch.StartNew();
-        
+
         APIGatewayProxyResponse response;
-        
+
         var category = "invalid-request";
 
-        if (!CustomerValidationRequestParser.TryParse(request, out var document))
+        var route = AuthenticationRoute.Resolve(request);
+        if (route == AuthenticationRoute.Unknown)
+            response = AuthenticationResponse.NotFound();
+        else if (request.HttpMethod != "POST")
+            response = AuthenticationResponse.MethodNotAllowed(route);
+        else if (!CustomerCodeRequestParser.TryParse(request, route, out var input, out var invalidDocument))
         {
-            response = AuthenticationResponse.InvalidRequest();
+            response = AuthenticationResponse.InvalidRequest(route);
+            if (invalidDocument) category = "invalid-document";
         }
         else
         {
             var budget = context.RemainingTime - TimeSpan.FromSeconds(1);
             using var cancellation = new CancellationTokenSource();
-
             try
             {
-                if (budget <= TimeSpan.Zero)
-                    throw new OperationCanceledException();
-
+                if (budget <= TimeSpan.Zero) throw new OperationCanceledException();
                 cancellation.CancelAfter(budget);
-                var result = await execute(document, cancellation.Token).WaitAsync(cancellation.Token);
-                
+                (response, category) = await ExecuteAsync(input!, route, cancellation.Token).WaitAsync(cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();
-                
-                response = AuthenticationResponse.FromResult(result);
-                category = result.Outcome switch
-                {
-                    CustomerAuthenticationOutcome.Authenticated => "authenticated",
-                    CustomerAuthenticationOutcome.NotEligible => "not-eligible",
-                    _ => "invalid-document"
-                };
             }
             catch (Exception error)
             {
                 observability?.RecordException(error);
-                response = AuthenticationResponse.TechnicalFailure();
-                
-                category = error is OperationCanceledException || cancellation.IsCancellationRequested
-                    ? "timeout"
-                    : "technical-failure";
+                response = AuthenticationResponse.TechnicalFailure(route);
+                category = error is OperationCanceledException or TimeoutException || cancellation.IsCancellationRequested ? "timeout" : "technical-failure";
             }
         }
 
@@ -106,6 +102,24 @@ public sealed class FunctionHandler : IDisposable, IAsyncDisposable
         }
 
         return response;
+    }
+
+    private async Task<(APIGatewayProxyResponse Response, string Category)> ExecuteAsync(CustomerCodeInput input, string route, CancellationToken cancellationToken)
+    {
+        if (route == AuthenticationRoute.RequestCode)
+        {
+            var result = await requestCode(input.Document, cancellationToken);
+            var category = result.InvalidDocument ? "invalid-document" : result.RetryAfterSeconds > 0 ? "rate-limited" : "code-requested";
+            return (AuthenticationResponse.FromRequest(result), category);
+        }
+        var verified = await verifyCode(input.ChallengeId, input.Document, input.Code, cancellationToken);
+        var outcome = verified.Outcome switch
+        {
+            CustomerAuthenticationOutcome.Authenticated => "authenticated",
+            CustomerAuthenticationOutcome.NotEligible => "not-eligible",
+            _ => "invalid-document"
+        };
+        return (AuthenticationResponse.FromResult(verified), outcome);
     }
 
     public void Dispose()

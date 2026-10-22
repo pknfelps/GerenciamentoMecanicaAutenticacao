@@ -154,3 +154,7 @@ Referências: [variáveis reservadas da Lambda](https://docs.aws.amazon.com/lamb
 O bootstrap e o lookup PostgreSQL recebem o componente Mecanica.Integrations da observabilidade existente. São acessos concluídos, não invocações HTTP. Provider, orçamento compartilhado de flush e sanitização permanecem preservados. Consulte [regras e validação](METRICAS_INTEGRACOES.md). Comprovação implantada dos novos sinais permanece pendente.
 
 **19/10/2026 — Métricas das integrações, regressão concluída:** suíte completa com Docker Linux, sem filtros: 1.187 testes API e 245 testes Lambda, zero falhas/ignorados. Cenários PostgreSQL novos e existentes aprovados. Implementação e validação local concluídas; publicação e comprovação dos novos sinais no New Relic permanecem pendentes. Evidências em artifacts/e5-integrations/full-tests e regras em METRICAS_INTEGRACOES.md.
+
+## Ajuste AE.6 — população da autenticação
+
+A revisão local de 22/10/2026 usa POST /customers/auth/request-code e POST /customers/auth/verify-code, com modelos fixos no manifesto. Invocações/duração incluem solicitação e confirmação; code-requested e rate-limited complementam as categorias existentes. Para logins concluídos, filtrar outcome=authenticated; 400/401/429 não são falha técnica. IDs/códigos/documentos/e-mails não são dimensões. Bootstrap agora mede duas chamadas lógicas SSM e duas Secrets Manager, mantendo o orçamento global. [Fluxo/testes/limites](AE6_AUTENTICACAO_POR_CODIGO.md). Registros de validação anteriores são históricos; esta implementação não comprova implantação.

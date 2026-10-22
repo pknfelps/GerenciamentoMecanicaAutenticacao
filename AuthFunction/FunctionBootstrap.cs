@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Persistence;
 using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Amazon;
 using Amazon.Runtime;
@@ -10,6 +12,7 @@ namespace GerenciamentoMecanica.Autenticacao.Function;
 public sealed class FunctionBootstrap
 {
     private readonly IntegrationMetrics? metrics;
+    private readonly ILogger<PostgreSqlCustomerAccessStore>? logger;
     private readonly Func<string, string?> readEnvironment;
     private readonly Func<RegionEndpoint, IAmazonSimpleSystemsManagement> createParameters;
     private readonly Func<RegionEndpoint, IAmazonSecretsManager> createSecrets;
@@ -18,7 +21,7 @@ public sealed class FunctionBootstrap
     {
     }
 
-    public FunctionBootstrap(IntegrationMetrics? metrics) : this(
+    public FunctionBootstrap(IntegrationMetrics? metrics, ILogger<PostgreSqlCustomerAccessStore>? logger = null) : this(
         Environment.GetEnvironmentVariable,
         region => new AmazonSimpleSystemsManagementClient(new AmazonSimpleSystemsManagementConfig
         {
@@ -31,7 +34,7 @@ public sealed class FunctionBootstrap
             RegionEndpoint = region,
             RetryMode = RequestRetryMode.Standard,
             MaxErrorRetry = 2
-        }), metrics)
+        }), metrics, logger)
     {
     }
 
@@ -46,12 +49,13 @@ public sealed class FunctionBootstrap
     public FunctionBootstrap(
         Func<string, string?> readEnvironment,
         Func<RegionEndpoint, IAmazonSimpleSystemsManagement> createParameters,
-        Func<RegionEndpoint, IAmazonSecretsManager> createSecrets, IntegrationMetrics? metrics)
+        Func<RegionEndpoint, IAmazonSecretsManager> createSecrets, IntegrationMetrics? metrics, ILogger<PostgreSqlCustomerAccessStore>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(readEnvironment);
         ArgumentNullException.ThrowIfNull(createParameters);
         ArgumentNullException.ThrowIfNull(createSecrets);
         this.metrics = metrics;
+        this.logger = logger;
         this.readEnvironment = readEnvironment;
         this.createParameters = createParameters;
         this.createSecrets = createSecrets;
@@ -74,8 +78,9 @@ public sealed class FunctionBootstrap
             var configuration = await new AwsRuntimeConfigurationLoader(parameters, secrets, metrics)
                 .LoadAsync(environment, certificate, cancellationToken);
             
-            return new FunctionRuntime(configuration, metrics);
+            return new FunctionRuntime(configuration, metrics, logger: logger);
         }
+        catch (OperationCanceledException) { throw new OperationCanceledException("Authentication initialization canceled.", cancellationToken); }
         catch (Exception)
         {
             throw new InvalidOperationException("Unable to initialize function runtime. Check configuration, credentials and access.");

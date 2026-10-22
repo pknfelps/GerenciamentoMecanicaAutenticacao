@@ -25,11 +25,12 @@ public sealed class SafeTraceProcessor(TelemetryCollectionOptions collection) : 
             item = new ActivityEvent("exception", item.Timestamp, tags);
         }
 
-        activity.DisplayName = database ? collection.DatabaseSpanName : collection.InvocationSpanName;
+        var route = activity.GetCustomProperty("Mecanica.Auth.Route") as string ?? Http.AuthenticationRoute.Unknown;
+        activity.DisplayName = database ? collection.DatabaseSpanName : collection.InvocationSpanNames.GetValueOrDefault(route, collection.InvocationSpanName);
         if (!database)
         {
             activity.SetTag("http.request.method", "POST");
-            activity.SetTag("http.route", "/customers/validate");
+            activity.SetTag("http.route", route);
         }
         if (activity.Status == ActivityStatusCode.Error)
             activity.SetStatus(ActivityStatusCode.Error, database

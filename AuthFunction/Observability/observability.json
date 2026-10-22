@@ -1,14 +1,21 @@
 {
   "Telemetry": {
     "Enabled": false,
-    "IntegrationMetricAttributes": [ "integration", "operation", "purpose", "outcome" ],
+    "IntegrationMetricAttributes": [
+      "integration",
+      "operation",
+      "purpose",
+      "outcome"
+    ],
     "Propagation": {
-      "InboundFormats": [ "tracecontext" ]
+      "InboundFormats": [
+        "tracecontext"
+      ]
     },
     "FlushBudgetMilliseconds": 500,
     "ResponseReserveMilliseconds": 500,
     "Collection": {
-      "InvocationSpanName": "POST /customers/validate",
+      "InvocationSpanName": "POST /customers/auth",
       "DatabaseSpanName": "postgresql",
       "InvocationErrorMessage": "Falha durante a autenticação.",
       "DatabaseErrorMessage": "Falha na operação PostgreSQL.",
@@ -52,7 +59,11 @@
         8,
         10,
         15
-      ]
+      ],
+      "InvocationSpanNames": {
+        "/customers/auth/request-code": "POST /customers/auth/request-code",
+        "/customers/auth/verify-code": "POST /customers/auth/verify-code"
+      }
     }
   },
   "Logging": {
@@ -61,7 +72,8 @@
       "ParseStateValues": true,
       "LogLevel": {
         "Default": "None",
-        "GerenciamentoMecanica.Autenticacao.Function": "Information"
+        "GerenciamentoMecanica.Autenticacao.Function": "Information",
+        "GerenciamentoMecanica.Autenticacao.Infrastructure.Persistence.PostgreSqlCustomerAccessStore": "Information"
       }
     }
   },

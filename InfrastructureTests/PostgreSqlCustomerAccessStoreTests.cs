@@ -14,7 +14,7 @@ using Testcontainers.PostgreSql;
 namespace GerenciamentoMecanica.Autenticacao.InfrastructureTests;
 
 [NonParallelizable]
-public sealed class PostgreSqlCustomerAccessStoreTests
+public sealed partial class PostgreSqlCustomerAccessStoreTests
 {
     private const string Document = "529.982.247-25";
     private const string OtherDocument = "10.359.666/0001-94";
