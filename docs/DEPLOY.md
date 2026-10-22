@@ -2,7 +2,7 @@
 
 ## Recursos e pré-requisitos
 
-Auth usa SAM CLI 1.167.0/CloudFormation com ZIP .NET 10/linux-x64. [Template](../template.yaml) declara função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. [samconfig.toml](../samconfig.toml) fixa stacks hom/prd, região e bucket; configure-aws-credentials restringe conta 121754142617. Bootstrap/base/banco/Gateway continuam Terraform; IAM runtime/SG/bucket/contratos e ZIPs ficam fora do descarte auth com CodeUri objeto; templates operacionais SAM são removidos. Templates antigos com CodeUri string ainda seguem a limpeza anterior da chave corrente.
+Auth usa SAM CLI 1.167.0/CloudFormation com ZIP .NET 10/linux-x64. [Template](../template.yaml) declara função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. [samconfig.auth.toml](../samconfig.auth.toml) fixa stacks hom/prd, região e bucket; configure-aws-credentials restringe conta 121754142617. Bootstrap/base/banco/Gateway continuam Terraform; IAM runtime/SG/bucket/contratos e ZIPs ficam fora do descarte auth com CodeUri objeto; templates operacionais SAM são removidos. Templates antigos com CodeUri string ainda seguem a limpeza anterior da chave corrente.
 
 Conferência somente leitura em 2026-10-11 na conta 121754142617: nenhuma função, stack, log group ou parâmetro auth/v2; nenhum objeto ou versão histórica nos backends hom/auth e prd/auth. As roles runtime/deploy hom/prd existem; a role CI ainda não existe. Os parâmetros/SGs de base/banco estão ausentes. Por isso o código Terraform auth foi retirado sem importação ou operação de destroy; nenhum estado foi apagado.
 
@@ -24,7 +24,7 @@ Após publicar a alteração por PR e concluir auth-destroy da stack ROLLBACK_CO
 
 auth-ci roda em PRs develop/main e manual. Usa role CI restrita aos dois objetos Auth.Contracts 1.0.0/checksum, sem Environment de deploy ou leitura de Secrets. Mantém o hash conhecido b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9, feed/mapeamento NuGet e cache separado pelo hash.
 
-Executa restore/build Release e todos os testes .NET/PostgreSQL. Docker indisponível é erro; testes não são ignorados. O segundo job usa sam validate --lint, valida Function/Observability/collector.yaml com o comando nativo da imagem Contrib 0.151.0 e executa actionlint 1.7.12. Não utiliza permissões de leitura da layer; a role CI continua restrita ao pacote. OpenAPI continua estático, sem lint próprio. PR de fork deve ser revisado e trazido a uma branch do repositório para obter o pacote por OIDC; não usar pull_request_target.
+Executa restore/build Release e todos os testes .NET/PostgreSQL. Docker indisponível é erro; testes não são ignorados. O segundo job usa sam validate --lint, valida AuthFunction/Observability/collector.yaml com o comando nativo da imagem Contrib 0.151.0 e executa actionlint 1.7.12. Não utiliza permissões de leitura da layer; a role CI continua restrita ao pacote. OpenAPI continua estático, sem lint próprio. PR de fork deve ser revisado e trazido a uma branch do repositório para obter o pacote por OIDC; não usar pull_request_target.
 
 ## Publicar — auth-publish
 
@@ -62,12 +62,12 @@ Nenhuma senha, JWT ou License Key é lida pela pipeline. O provider da extensão
 
 Input somente environment; um job destroy e nenhuma aprovação intermediária. O disparo manual autoriza todo o descarte. Mesma fila auth-<ambiente>, branch e OIDC dos demais workflows.
 
-SAM CLI 1.167.0 usa o mesmo samconfig.toml do deploy, sem comandos CloudFormation diretos:
+SAM CLI 1.167.0 usa o mesmo samconfig.auth.toml do deploy, sem comandos CloudFormation diretos:
 
 ```bash
 sam delete \
   --config-env "$TARGET_ENVIRONMENT" \
-  --config-file "$GITHUB_WORKSPACE/samconfig.toml" \
+  --config-file "$GITHUB_WORKSPACE/samconfig.auth.toml" \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
   --no-prompts
@@ -93,11 +93,11 @@ Referências: [sam delete](https://docs.aws.amazon.com/serverless-application-mo
 Comandos padrão na raiz, com pacote já obtido:
 
 ~~~powershell
-dotnet restore GerenciamentoMecanicaAutenticacao.slnx
-dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build --no-restore
-sam validate --lint --template-file template.yaml --region us-east-1
-sam build --template-file template.yaml
+dotnet restore GerenciamentoMecanicaServerless.slnx
+dotnet build GerenciamentoMecanicaServerless.slnx -c Release --no-restore
+dotnet test GerenciamentoMecanicaServerless.slnx -c Release --no-build --no-restore
+sam validate --lint --template-file templates/auth.yaml --region us-east-1
+sam build --template-file templates/auth.yaml
 actionlint
 ~~~
 

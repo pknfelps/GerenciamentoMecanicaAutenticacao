@@ -72,13 +72,13 @@ jobs:
       - name: Build and test the complete solution
         run: |
           docker info > /dev/null
-          dotnet restore GerenciamentoMecanicaAutenticacao.slnx
-          dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-          dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build --no-restore
+          dotnet restore GerenciamentoMecanicaServerless.slnx
+          dotnet build GerenciamentoMecanicaServerless.slnx -c Release --no-restore
+          dotnet test GerenciamentoMecanicaServerless.slnx -c Release --no-build --no-restore
       - name: Build Function with SAM
         run: |
-          sam validate --lint --template-file template.yaml
-          sam build --template-file template.yaml
+          sam validate --lint --template-file templates/auth.yaml
+          sam build --template-file templates/auth.yaml
           test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.dll
           test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.deps.json
           test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.runtimeconfig.json

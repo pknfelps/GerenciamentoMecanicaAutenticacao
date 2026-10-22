@@ -59,7 +59,7 @@ Resources:
     Properties:
       FunctionName: !Sub 'mecanica-${Environment}-auth'
       Description: !Sub 'Validacao de cliente e emissao JWT - ${ArtifactCommit}'
-      CodeUri: Function/
+      CodeUri: ../AuthFunction/
       PackageType: Zip
       Runtime: dotnet10
       Architectures: [x86_64]

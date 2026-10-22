@@ -3,12 +3,14 @@
     <Project Path="Domain/Domain.csproj" />
     <Project Path="Application/Application.csproj" />
     <Project Path="Infrastructure/Infrastructure.csproj" />
-    <Project Path="Function/Function.csproj" />
+    <Project Path="AuthFunction/AuthFunction.csproj" />
+    <Project Path="EmailFunction/EmailFunction.csproj" />
   </Folder>
   <Folder Name="/testes/">
     <Project Path="ApplicationTests/ApplicationTests.csproj" />
     <Project Path="ContractTests/ContractTests.csproj" />
     <Project Path="InfrastructureTests/InfrastructureTests.csproj" />
-    <Project Path="FunctionTests/FunctionTests.csproj" />
+    <Project Path="AuthFunctionTests/AuthFunctionTests.csproj" />
+    <Project Path="EmailFunctionTests/EmailFunctionTests.csproj" />
   </Folder>
 </Solution>

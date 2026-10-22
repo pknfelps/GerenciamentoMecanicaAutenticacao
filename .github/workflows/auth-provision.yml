@@ -146,7 +146,7 @@ jobs:
           test "$current" = 1 || { echo '::error::Cadastre a License Key no Secret do ambiente antes de provisionar.'; exit 1; }
       - name: Deploy with SAM
         run: |
-          sam deploy --config-env "$TARGET_ENVIRONMENT" --config-file "$GITHUB_WORKSPACE/samconfig.toml" \
+          sam deploy --config-env "$TARGET_ENVIRONMENT" --config-file "$GITHUB_WORKSPACE/samconfig.auth.toml" \
             --template-file "artifacts/deploy/sam-$TARGET_ENVIRONMENT.json" \
             --parameter-overrides "Environment=$TARGET_ENVIRONMENT" "ArtifactCommit=$ARTIFACT_COMMIT" \
               "WorkloadSubnetIds=$WORKLOAD_SUBNET_IDS" "AuthSecurityGroupId=$AUTH_SECURITY_GROUP_ID" \

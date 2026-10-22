@@ -70,7 +70,7 @@ jobs:
         run: |
           sam delete \
             --config-env "$TARGET_ENVIRONMENT" \
-            --config-file "$GITHUB_WORKSPACE/samconfig.toml" \
+            --config-file "$GITHUB_WORKSPACE/samconfig.auth.toml" \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --no-prompts

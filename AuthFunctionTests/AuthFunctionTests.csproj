@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>FunctionTests</AssemblyName>
+    <RootNamespace>GerenciamentoMecanica.Autenticacao.FunctionTests</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -14,6 +16,6 @@
     <Using Include="NUnit.Framework" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../Function/Function.csproj" />
+    <ProjectReference Include="../AuthFunction/AuthFunction.csproj" />
   </ItemGroup>
 </Project>

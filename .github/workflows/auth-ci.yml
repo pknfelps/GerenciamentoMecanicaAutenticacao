@@ -65,9 +65,9 @@ jobs:
       - name: Build and test the complete solution
         run: |
           docker info > /dev/null
-          dotnet restore GerenciamentoMecanicaAutenticacao.slnx
-          dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-          dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build --no-restore
+          dotnet restore GerenciamentoMecanicaServerless.slnx
+          dotnet build GerenciamentoMecanicaServerless.slnx -c Release --no-restore
+          dotnet test GerenciamentoMecanicaServerless.slnx -c Release --no-build --no-restore
 
   configuration:
     runs-on: ubuntu-24.04
@@ -83,7 +83,7 @@ jobs:
         with:
           version: '1.167.0'
       - name: Validate SAM template
-        run: sam validate --lint --template-file template.yaml --region "$AWS_REGION"
+        run: sam validate --lint --template-file templates/auth.yaml --region "$AWS_REGION"
       - name: Validate workflows
         env:
           ACTIONLINT_VERSION: 1.7.12

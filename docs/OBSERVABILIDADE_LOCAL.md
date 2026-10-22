@@ -2,7 +2,7 @@
 
 **2026-10-15 — Decisão vigente sobre testes de Collectors/New Relic:** removidos os testes de transporte/conexão dos Collectors locais e New Relic na API/Lambda, os receptores OTLP fictícios e seus auxiliares. CI não executa mais as imagens Contrib para validar exporter/YAML. Não há cenários ignorados ou substituídos por mocks. Na Lambda, todos os testes de telemetria, incluindo instrumentação InMemory, foram removidos por decisão do mantenedor; testes funcionais HTTP/JWT/PostgreSQL e logs do contrato permanecem; configurações de produção, Compose manual, SAM/publish e preflights operacionais de credencial permanecem. Conectividade/ingestão e comportamento dos Collectors passam a conferência operacional após deploy. Resultados anteriores são históricos; E5 continua parcial. Nenhum deploy, workflow remoto ou alteração AWS nesta remoção.
 
-A Function produz traces, métricas e logs OTLP somente com ativação explícita. A configuração versionada é [observability.json](../Function/Observability/observability.json); variáveis de ambiente prevalecem sobre o JSON. A leitura acontece uma vez, sem recarga.
+A Function produz traces, métricas e logs OTLP somente com ativação explícita. A configuração versionada é [observability.json](../AuthFunction/Observability/observability.json); variáveis de ambiente prevalecem sobre o JSON. A leitura acontece uma vez, sem recarga.
 
 ## Configuração
 
@@ -50,12 +50,12 @@ docker compose -f compose.observability.yaml up -d
 docker compose -f compose.observability.yaml logs otel-collector
 docker compose -f compose.observability.yaml down
 
-dotnet restore GerenciamentoMecanicaAutenticacao.slnx
-dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build
-dotnet publish Function/Function.csproj -c Release -r linux-x64 --self-contained false -o artifacts/function
+dotnet restore GerenciamentoMecanicaServerless.slnx
+dotnet build GerenciamentoMecanicaServerless.slnx -c Release --no-restore
+dotnet test GerenciamentoMecanicaServerless.slnx -c Release --no-build
+dotnet publish AuthFunction/AuthFunction.csproj -c Release -r linux-x64 --self-contained false -o artifacts/function
 sam validate --lint
-sam build --template-file template.yaml
+sam build --template-file templates/auth.yaml
 ```
 
 O Compose inicia **somente o Collector**, com OTLP HTTP/protobuf em `127.0.0.1:4319`, memory_limiter/batch/debug, sem credencial ou persistência. Não executa a Function e permanece disponível para operação manual. Não há testes automatizados de telemetria na Lambda; a conferência dos sinais e dos Collectors é operacional.
@@ -66,7 +66,7 @@ FunctionTests preserva os testes funcionais do handler, contrato HTTP e logs san
 
 ## Collector de produção no SAM
 
-OpenTelemetry e a layer oficial amd64 0.22.0 são permanentes na Lambda implantada. O único Function/Observability/collector.yaml acompanha o ZIP e exporta para New Relic por Secrets Manager nativo. SAM fixa Telemetry__Enabled=true, endpoint 127.0.0.1:4318, URI /var/task/Observability/collector.yaml, GOMEMLIMIT=96MiB e nome do Secret do próprio ambiente. Não há parâmetros de desativação; o tracing nativo X-Ray também é fixo no SAM com Tracing: Active.
+OpenTelemetry e a layer oficial amd64 0.22.0 são permanentes na Lambda implantada. O único AuthFunction/Observability/collector.yaml acompanha o ZIP e exporta para New Relic por Secrets Manager nativo. SAM fixa Telemetry__Enabled=true, endpoint 127.0.0.1:4318, URI /var/task/Observability/collector.yaml, GOMEMLIMIT=96MiB e nome do Secret do próprio ambiente. Não há parâmetros de desativação; o tracing nativo X-Ray também é fixo no SAM com Tracing: Active.
 
 Configuração local JSON/Compose permanece opt-in e usa debug sem AWS/New Relic; isso não é uma opção de deploy. O YAML de produção preserva memory_limiter → decouple. Não há testes automatizados dos Collectors nem validação da imagem no CI; transporte, ciclo/fila/congelamento e ingestão exigem conferência operacional posterior.
 
@@ -104,7 +104,7 @@ Nomes de cabeçalho são comparados sem distinção de maiúsculas. `MultiValueH
 
 O tracing principal continua OTLP direto pelo Collector. X-Ray nativo e polling permanecem como diagnóstico separado, sem árvore única com OTLP. O mantenedor retirou esse requisito do escopo após a fragmentação comprovada; não registrar a união como corrigida. Um pai W3C externo sem spans exportados ainda pode estar ausente no New Relic. Contratos HTTP/JWT, SAM, IAM, Collectors e workflows não mudam.
 
-Testes simples em FunctionTests/Observability verificam W3C válido/não amostrado, X-Ray/runtime ignorados, ausência/invalidade/ambiguidade, representações do evento, concorrência, descarte de metadados e configuração com mensagem fixa. Não usam exporters fictícios, AWS, banco ou Collector. Essa autorização é específica para os testes simples desta alteração; as antigas suítes de transporte continuam removidas. **Validação local concluída:** restore/build Release, 269 testes aprovados (24 novos de propagação/configuração), zero falhas/ignorados, incluindo PostgreSQL/Testcontainers; publish linux-x64 sem self-contained e SAM validate --lint/build aprovados. Certificado RDS, JSON/YAML e runtimeconfig conferidos no publish e no conteúdo empacotado pelo SAM, sem assembly de teste/exporter InMemory. A API teve 1.196 testes aprovados e conferência HTTP manual com Collector real: três raízes sem W3C, continuidade W3C e contexto não amostrado exportados. Evidências locais: artifacts/e5-w3c-only nos dois repositórios. A implantação/runtime gerenciado e a apresentação dos novos traces no New Relic continuam pendentes.
+Testes simples em AuthFunctionTests/Observability verificam W3C válido/não amostrado, X-Ray/runtime ignorados, ausência/invalidade/ambiguidade, representações do evento, concorrência, descarte de metadados e configuração com mensagem fixa. Não usam exporters fictícios, AWS, banco ou Collector. Essa autorização é específica para os testes simples desta alteração; as antigas suítes de transporte continuam removidas. **Validação local concluída:** restore/build Release, 269 testes aprovados (24 novos de propagação/configuração), zero falhas/ignorados, incluindo PostgreSQL/Testcontainers; publish linux-x64 sem self-contained e SAM validate --lint/build aprovados. Certificado RDS, JSON/YAML e runtimeconfig conferidos no publish e no conteúdo empacotado pelo SAM, sem assembly de teste/exporter InMemory. A API teve 1.196 testes aprovados e conferência HTTP manual com Collector real: três raízes sem W3C, continuidade W3C e contexto não amostrado exportados. Evidências locais: artifacts/e5-w3c-only nos dois repositórios. A implantação/runtime gerenciado e a apresentação dos novos traces no New Relic continuam pendentes.
 
 Publicação: api-deploy → auth-publish/auth-provision → gateway-provision com a nova versão numérica. Remover eventuais overrides antigos com xray. Conferir novas raízes sem W3C, continuidade W3C e relações PostgreSQL/logs; não exigir união ao polling. E5.3/E5.14 não serão marcadas integralmente concluídas por essa mudança. [Decisão compartilhada](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/TRACING_W3C_E_XRAY.md).
 
