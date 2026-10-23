@@ -14,6 +14,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="GerenciamentoMecanica.Auth.Contracts" Version="[1.0.0]" />
+    <PackageReference Include="AWSSDK.Lambda" Version="4.0.108.1" />
     <PackageReference Include="AWSSDK.Core" Version="4.0.102.8" />
     <PackageReference Include="AWSSDK.SecretsManager" Version="4.0.100.15" />
     <PackageReference Include="AWSSDK.SimpleSystemsManagement" Version="4.0.104.1" />

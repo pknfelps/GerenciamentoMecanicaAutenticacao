@@ -4,189 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Destino: develop/hom ou main/prd'
+        description: Develop/hom ou main/prd
         required: true
         default: hom
         type: choice
         options: [hom, prd]
-
 permissions: {}
-defaults:
-  run:
-    shell: bash
 concurrency:
   group: auth-${{ inputs.environment }}
   cancel-in-progress: false
-
-env:
-  TARGET_ENVIRONMENT: ${{ inputs.environment }}
-  AWS_REGION: us-east-1
-  AWS_PAGER: ''
-  DOTNET_NOLOGO: 'true'
-  SAM_CLI_TELEMETRY: '0'
-
 jobs:
-  package:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    outputs:
-      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Check publication branch
-        run: |
-          case "$TARGET_ENVIRONMENT" in hom) branch=develop ;; prd) branch=main ;; *) exit 1 ;; esac
-          test "$GITHUB_REF" = "refs/heads/$branch"
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
-        with:
-          dotnet-version: '10.0.x'
-      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
-        with:
-          version: '1.167.0'
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
-          allowed-account-ids: '121754142617'
-          role-session-name: auth-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Download and verify Auth.Contracts 1.0.0
-        env:
-          PACKAGE_SHA256: b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9
-        run: |
-          package=GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
-          key="packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/$package"
-          mkdir -p artifacts/auth-contracts
-          aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$key" "artifacts/auth-contracts/$package" > /dev/null
-          aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$key.sha256" "$RUNNER_TEMP/package.sha256" > /dev/null
-          printf '%s\n' "$PACKAGE_SHA256" | cmp - "$RUNNER_TEMP/package.sha256"
-          printf '%s  %s\n' "$PACKAGE_SHA256" "artifacts/auth-contracts/$package" | sha256sum --check --strict
-          echo "NUGET_PACKAGES=$RUNNER_TEMP/nuget-$PACKAGE_SHA256" >> "$GITHUB_ENV"
-      - name: Build and test the complete solution
-        run: |
-          docker info > /dev/null
-          dotnet restore GerenciamentoMecanicaAutenticacao.slnx
-          dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-          dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build --no-restore
-      - name: Build Function with SAM
-        run: |
-          sam validate --lint --template-file template.yaml
-          sam build --template-file template.yaml
-          test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.dll
-          test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.deps.json
-          test -s .aws-sam/build/AuthFunction/GerenciamentoMecanica.Autenticacao.Function.runtimeconfig.json
-          test -s .aws-sam/build/AuthFunction/Certificates/rds-ca.pem
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        id: bundle
-        with:
-          name: auth-build-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            .aws-sam/build/
-            contracts/openapi.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-
   publish:
-    needs: package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
+    uses: ./.github/workflows/reusable-publish.yml
     permissions:
       contents: read
       actions: read
       id-token: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
-        with:
-          version: '1.167.0'
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          allowed-account-ids: '121754142617'
-          role-session-name: auth-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.package.outputs.artifact_id }}
-          path: .
-          merge-multiple: true
-      - name: Package and upload Lambda with SAM
-        run: |
-          mkdir -p artifacts/bundle
-          sam package --template-file .aws-sam/build/template.yaml \
-            --s3-bucket mecanica-artifacts-121754142617-us-east-1 \
-            --s3-prefix "sam/auth/$TARGET_ENVIRONMENT/$GITHUB_SHA" \
-            --output-template-file "artifacts/bundle/sam-$TARGET_ENVIRONMENT.json" --use-json
-          cp contracts/openapi.json artifacts/bundle/openapi.json
-          for file in "sam-$TARGET_ENVIRONMENT.json" openapi.json; do
-            sha256sum "artifacts/bundle/$file" | cut -d ' ' -f 1 > "artifacts/bundle/$file.sha256"
-          done
-      - name: Record uploaded ZIP metadata
-        run: |
-          zip_key="$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Key' "artifacts/bundle/sam-$TARGET_ENVIRONMENT.json")"
-          case "$zip_key" in "sam/auth/$TARGET_ENVIRONMENT/$GITHUB_SHA/"*) ;; *) exit 1 ;; esac
-          version="$(aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$zip_key" \
-            --query VersionId --output text "$RUNNER_TEMP/function.zip")"
-          {
-            echo "Commit do codigo e template: $GITHUB_SHA"
-            echo "- $zip_key; SHA-256: $(sha256sum "$RUNNER_TEMP/function.zip" | cut -d ' ' -f 1); S3 version: $version"
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Publish immutable SAM template and checksum
-        working-directory: artifacts/bundle
-        run: |
-          for file in "sam-$TARGET_ENVIRONMENT.json" "sam-$TARGET_ENVIRONMENT.json.sha256"; do
-            key="contracts/auth/$GITHUB_SHA/$file"
-            if version="$(aws s3api put-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-              --expected-bucket-owner 121754142617 --key "$key" --body "$file" \
-              --if-none-match '*' --checksum-algorithm SHA256 \
-              --metadata "commit=$GITHUB_SHA,repository=$GITHUB_REPOSITORY" \
-              --query VersionId --output text 2> "$RUNNER_TEMP/upload.err")"; then
-              echo "Published $key"
-            elif grep -q '(PreconditionFailed)' "$RUNNER_TEMP/upload.err"; then
-              version="$(aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-                --expected-bucket-owner 121754142617 --key "$key" \
-                --query VersionId --output text "$RUNNER_TEMP/existing")"
-              cmp "$file" "$RUNNER_TEMP/existing" || { echo "::error::Immutable artifact differs: $key"; exit 1; }
-              echo "Identical artifact already exists: $key"
-            else
-              cat "$RUNNER_TEMP/upload.err" >&2
-              exit 1
-            fi
-            echo "- $key; SHA-256: $(sha256sum "$file" | cut -d ' ' -f 1); S3 version: $version" >> "$GITHUB_STEP_SUMMARY"
-          done
-      - name: Publish immutable OpenAPI and checksum
-        working-directory: artifacts/bundle
-        run: |
-          for file in openapi.json openapi.json.sha256; do
-            key="contracts/auth/$GITHUB_SHA/$file"
-            if version="$(aws s3api put-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-              --expected-bucket-owner 121754142617 --key "$key" --body "$file" \
-              --if-none-match '*' --checksum-algorithm SHA256 \
-              --metadata "commit=$GITHUB_SHA,repository=$GITHUB_REPOSITORY" \
-              --query VersionId --output text 2> "$RUNNER_TEMP/upload.err")"; then
-              echo "Published $key"
-            elif grep -q '(PreconditionFailed)' "$RUNNER_TEMP/upload.err"; then
-              version="$(aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-                --expected-bucket-owner 121754142617 --key "$key" \
-                --query VersionId --output text "$RUNNER_TEMP/existing")"
-              cmp "$file" "$RUNNER_TEMP/existing" || { echo "::error::Immutable artifact differs: $key"; exit 1; }
-              echo "Identical artifact already exists: $key"
-            else
-              cat "$RUNNER_TEMP/upload.err" >&2
-              exit 1
-            fi
-            echo "- $key; SHA-256: $(sha256sum "$file" | cut -d ' ' -f 1); S3 version: $version" >> "$GITHUB_STEP_SUMMARY"
-          done
+    with:
+      component: auth
+      environment: ${{ inputs.environment }}

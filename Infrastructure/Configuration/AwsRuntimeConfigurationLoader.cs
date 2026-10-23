@@ -1,3 +1,4 @@
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Amazon.SecretsManager;
 using Amazon.SecretsManager.Model;
 using Amazon.SimpleSystemsManagement;
@@ -10,7 +11,7 @@ namespace GerenciamentoMecanica.Autenticacao.Infrastructure.Configuration;
 
 public sealed class AwsRuntimeConfigurationLoader(
     IAmazonSimpleSystemsManagement parameters,
-    IAmazonSecretsManager secrets)
+    IAmazonSecretsManager secrets, IntegrationMetrics? metrics = null)
 {
     public static TimeSpan InitializationTimeout => TimeSpan.FromSeconds(8);
 
@@ -40,13 +41,22 @@ public sealed class AwsRuntimeConfigurationLoader(
                 databasePrefix + "auth-secret-arn", databasePrefix + "auth-db-user", databasePrefix + "ssl-mode"
             ];
 
-            var response = await parameters.GetParametersAsync(new GetParametersRequest
+            var response = await IntegrationMetrics.MeasureAsync(metrics, "ssm", "get_parameters", "bootstrap",
+                () => parameters.GetParametersAsync(new GetParametersRequest
             {
                 Names = [.. names],
                 WithDecryption = false
-            }, deadline.Token).WaitAsync(deadline.Token);
+            }, deadline.Token).WaitAsync(deadline.Token), cancellationToken);
 
             var values = ReadParameters(response, names);
+            var emailPrefix = $"/mecanica/{environment.Name}/email/v1/";
+            string[] emailNames = [emailPrefix + "invocation-arn", emailPrefix + "contract-version"];
+            var emailResponse = await IntegrationMetrics.MeasureAsync(metrics, "ssm", "get_parameters", "bootstrap",
+                () => parameters.GetParametersAsync(new GetParametersRequest
+                { Names = [.. emailNames], WithDecryption = false }, deadline.Token).WaitAsync(deadline.Token), cancellationToken);
+            var emailValues = ReadParameters(emailResponse, emailNames);
+            var email = EmailInvocationConfiguration.Parse(environment,
+                emailValues[emailNames[0]], emailValues[emailNames[1]]);
             var jwtArn = values[basePrefix + "jwt-secret-arn"];
             var databaseArn = values[databasePrefix + "auth-secret-arn"];
 
@@ -68,7 +78,7 @@ public sealed class AwsRuntimeConfigurationLoader(
 
             stage = "read JWT secret";
 
-            using var jwtDocument = await ReadSecretAsync(jwtArn, deadline.Token);
+            using var jwtDocument = await ReadSecretAsync(jwtArn, deadline.Token, cancellationToken);
 
             var key = ReadField(jwtDocument.RootElement, "key");
 
@@ -79,7 +89,7 @@ public sealed class AwsRuntimeConfigurationLoader(
 
             stage = "read database auth secret";
 
-            using var databaseDocument = await ReadSecretAsync(databaseArn, deadline.Token);
+            using var databaseDocument = await ReadSecretAsync(databaseArn, deadline.Token, cancellationToken);
 
             var username = ReadField(databaseDocument.RootElement, "username");
             var password = ReadField(databaseDocument.RootElement, "password");
@@ -106,7 +116,7 @@ public sealed class AwsRuntimeConfigurationLoader(
 
             deadline.Token.ThrowIfCancellationRequested();
 
-            return new RuntimeConfiguration(jwt, new PostgreSqlConfiguration(connection));
+            return new RuntimeConfiguration(jwt, new PostgreSqlConfiguration(connection), email);
         }
         catch (ConfigurationValidationException exception)
         {
@@ -124,13 +134,14 @@ public sealed class AwsRuntimeConfigurationLoader(
         }
     }
 
-    private async Task<JsonDocument> ReadSecretAsync(string arn, CancellationToken cancellationToken)
+    private async Task<JsonDocument> ReadSecretAsync(string arn, CancellationToken cancellationToken, CancellationToken callerCancellation)
     {
-        var response = await secrets.GetSecretValueAsync(new GetSecretValueRequest
+        var response = await IntegrationMetrics.MeasureAsync(metrics, "secretsmanager", "get_secret_value", "bootstrap",
+            () => secrets.GetSecretValueAsync(new GetSecretValueRequest
         {
             SecretId = arn,
             VersionStage = "AWSCURRENT"
-        }, cancellationToken).WaitAsync(cancellationToken);
+        }, cancellationToken).WaitAsync(cancellationToken), callerCancellation);
 
         if (string.IsNullOrWhiteSpace(response.SecretString))
             throw new ConfigurationValidationException("Secret must contain a JSON object.");

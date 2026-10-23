@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Infrastructure/Infrastructure.csproj" />
-    <ProjectReference Include="../Function/Function.csproj" />
+    <ProjectReference Include="../AuthFunction/AuthFunction.csproj" />
+    <ProjectReference Include="../EmailFunction/EmailFunction.csproj" />
   </ItemGroup>
 </Project>

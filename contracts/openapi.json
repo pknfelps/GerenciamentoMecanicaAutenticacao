@@ -2,15 +2,15 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Autenticação de clientes",
-    "version": "1.0.0",
-    "description": "Valida CPF/CNPJ e elegibilidade do cadastro antes de emitir JWT Customer. A implantação e integração com API Gateway REST serão configuradas separadamente."
+    "version": "2.0.0",
+    "description": "Código de uso único capturado no SMTP4dev; substitui customers/validate na publicação coordenada."
   },
   "paths": {
-    "/customers/validate": {
+    "/customers/auth/request-code": {
       "post": {
-        "operationId": "validateCustomerDocument",
-        "summary": "Autenticar cliente por documento",
-        "description": "Não exige token prévio. CPF/CNPJ numérico, com ou sem máscara exata; espaços, caracteres extras e dígitos verificadores inválidos são rejeitados. Cadastro inexistente e Inativo retornam a mesma negativa.",
+        "operationId": "requestCustomerAccessCode",
+        "summary": "Solicitar código de acesso do cliente",
+        "description": "Sem token prévio ou bypass por Authorization. JSON UTF-8 estrito de até 4 KiB; base64 do evento Gateway é decodificado antes do limite. Cache-Control no-store em todas as respostas.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -19,70 +19,248 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["document"],
+                "required": [
+                  "document"
+                ],
                 "properties": {
                   "document": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 18,
-                    "description": "Somente dígitos ASCII: CPF de 11 dígitos ou XXX.XXX.XXX-XX; CNPJ de 14 dígitos ou XX.XXX.XXX/XXXX-XX. Propriedades duplicadas são rejeitadas."
+                    "description": "CPF/CNPJ numérico válido com ou sem máscara. O parser compara propriedades sem distinguir maiúsculas e rejeita duplicações."
                   }
                 }
-              },
-              "example": { "document": "529.982.247-25" }
+              }
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "Cliente Ativo autenticado. JWT HS256 com role Customer e expiração de dez minutos, retornado como string JSON sem envelope.",
-            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
-            "content": { "application/json": { "schema": { "type": "string", "description": "JWT assinado." } } }
-          },
           "400": {
-            "description": "Corpo ou documento inválido, incluindo campos extras/duplicados, Content-Type incompatível ou Base64/UTF-8 inválidos.",
-            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+            "description": "Corpo ou campos inválidos; não inicializa AWS/banco.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
-                "schema": { "$ref": "#/components/schemas/AuthenticationProblem" },
-                "example": {
-                  "type": "about:blank",
-                  "title": "Requisição inválida",
-                  "status": 400,
-                  "detail": "O corpo ou documento informado é inválido.",
-                  "instance": "/customers/validate"
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
           },
-          "401": {
-            "description": "Documento válido sem cliente elegível. Não distingue cadastro inexistente de Inativo.",
-            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+          "429": {
+            "description": "Limite/cooldown do cliente elegível atingido.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "description": "Segundos inteiros até nova solicitação permitida."
+              }
+            },
             "content": {
               "application/problem+json": {
-                "schema": { "$ref": "#/components/schemas/AuthenticationProblem" },
-                "example": {
-                  "type": "about:blank",
-                  "title": "Autenticação não autorizada",
-                  "status": 401,
-                  "detail": "Não foi possível autenticar o cliente.",
-                  "instance": "/customers/validate"
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
           },
           "500": {
-            "description": "Falha técnica de configuração/persistência ou cancelamento pelo prazo disponível. Não expõe detalhes internos.",
-            "headers": { "Cache-Control": { "$ref": "#/components/headers/NoStore" } },
+            "description": "Falha técnica/timeout sem detalhes internos.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
-                "schema": { "$ref": "#/components/schemas/AuthenticationProblem" },
-                "example": {
-                  "type": "about:blank",
-                  "title": "Erro interno do servidor",
-                  "status": 500,
-                  "detail": "Não foi possível processar a autenticação.",
-                  "instance": "/customers/validate"
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Identificador opaco e mensagem genérica; não comprova existência ou captura.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "challengeId",
+                    "message"
+                  ],
+                  "properties": {
+                    "challengeId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "message": {
+                      "type": "string",
+                      "enum": [
+                        "Se o cadastro estiver apto, um código será enviado."
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/customers/auth/verify-code": {
+      "post": {
+        "operationId": "verifyCustomerAccessCode",
+        "summary": "Confirmar código de uso único e emitir JWT Customer",
+        "description": "Sem token prévio ou bypass por Authorization. JSON UTF-8 estrito de até 4 KiB; base64 do evento Gateway é decodificado antes do limite. Cache-Control no-store em todas as respostas.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "document",
+                  "challengeId",
+                  "code"
+                ],
+                "properties": {
+                  "document": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 18,
+                    "description": "CPF/CNPJ numérico válido com ou sem máscara. O parser compara propriedades sem distinguir maiúsculas e rejeita duplicações."
+                  },
+                  "challengeId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Identificador não vazio do desafio."
+                  },
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[0-9]{8}$",
+                    "minLength": 8,
+                    "maxLength": 8
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Corpo ou campos inválidos; não inicializa AWS/banco.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autenticação não autorizada; negativa genérica.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Falha técnica/timeout sem detalhes internos.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "String JSON contendo JWT Customer válido por dez minutos.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "description": "JWT HS256, sem documento/código/OS nas claims."
                 }
               }
             }
@@ -92,23 +270,41 @@
     }
   },
   "components": {
-    "headers": {
-      "NoStore": {
-        "description": "Impede armazenamento da resposta.",
-        "schema": { "type": "string", "enum": ["no-store"] }
-      }
-    },
     "schemas": {
-      "AuthenticationProblem": {
+      "Problem": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["type", "title", "status", "detail", "instance"],
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance"
+        ],
         "properties": {
-          "type": { "type": "string", "enum": ["about:blank"] },
-          "title": { "type": "string" },
-          "status": { "type": "integer", "enum": [400, 401, 500] },
-          "detail": { "type": "string" },
-          "instance": { "type": "string", "enum": ["/customers/validate"] }
+          "type": {
+            "type": "string",
+            "enum": [
+              "about:blank"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string",
+            "enum": [
+              "/customers/auth/request-code",
+              "/customers/auth/verify-code",
+              "/customers/auth"
+            ]
+          }
         }
       }
     }

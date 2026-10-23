@@ -1,129 +1,30 @@
 name: auth-provision
-run-name: auth-provision / ${{ inputs.environment }} / ${{ inputs.artifact_commit }}
+run-name: auth-provision / ${{ inputs.environment }} / ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Destino: develop/hom ou main/prd'
+        description: Develop/hom ou main/prd
         required: true
         default: hom
         type: choice
         options: [hom, prd]
       artifact_commit:
-        description: 'SHA completo do codigo e template SAM publicados'
+        description: SHA completo do codigo e template publicados
         required: true
         type: string
 permissions: {}
-defaults:
-  run:
-    shell: bash
 concurrency:
   group: auth-${{ inputs.environment }}
   cancel-in-progress: false
-env:
-  TARGET_ENVIRONMENT: ${{ inputs.environment }}
-  ARTIFACT_COMMIT: ${{ inputs.artifact_commit }}
-  STACK_NAME: mecanica-${{ inputs.environment }}-auth
-  AWS_REGION: us-east-1
-  AWS_PAGER: ''
-  SAM_CLI_TELEMETRY: '0'
-
 jobs:
-  deploy:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    environment: ${{ inputs.environment }}
+  provision:
+    uses: ./.github/workflows/reusable-provision.yml
     permissions:
       contents: read
+      actions: read
       id-token: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Check branch and published revision
-        run: |
-          case "$TARGET_ENVIRONMENT" in hom) branch=develop ;; prd) branch=main ;; *) exit 1 ;; esac
-          test "$GITHUB_REF" = "refs/heads/$branch"
-          [[ "$ARTIFACT_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          git merge-base --is-ancestor -- "$ARTIFACT_COMMIT" "$GITHUB_SHA"
-      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
-        with:
-          version: '1.167.0'
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          allowed-account-ids: '121754142617'
-          role-session-name: auth-deploy-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Read and verify published SAM template
-        run: |
-          mkdir -p artifacts/deploy
-          for file in "sam-$TARGET_ENVIRONMENT.json" "sam-$TARGET_ENVIRONMENT.json.sha256"; do
-            aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-              --expected-bucket-owner 121754142617 --key "contracts/auth/$ARTIFACT_COMMIT/$file" \
-              "artifacts/deploy/$file" > /dev/null
-          done
-          template="artifacts/deploy/sam-$TARGET_ENVIRONMENT.json"
-          hash="$(cat "$template.sha256")"
-          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
-          printf '%s  %s\n' "$hash" "$template" | sha256sum --check --strict
-          test "$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Bucket' "$template")" = mecanica-artifacts-121754142617-us-east-1
-          zip_key="$(jq -er '.Resources.AuthFunction.Properties.CodeUri.Key' "$template")"
-          case "$zip_key" in "sam/auth/$TARGET_ENVIRONMENT/$ARTIFACT_COMMIT/"*) ;; *) exit 1 ;; esac
-          aws s3api head-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$zip_key" --query '{Version:VersionId,Size:ContentLength}'
-          echo "ZIP_KEY=$zip_key" >> "$GITHUB_ENV"
-      - name: Read public network parameters
-        run: |
-          aws ssm get-parameters --no-with-decryption --names \
-            "/mecanica/$TARGET_ENVIRONMENT/base/v2/vpc-id" \
-            "/mecanica/$TARGET_ENVIRONMENT/base/v2/workload-subnet-ids" \
-            "/mecanica/$TARGET_ENVIRONMENT/base/v2/auth-security-group-id" \
-            "/mecanica/$TARGET_ENVIRONMENT/database/v2/security-group-id" > "$RUNNER_TEMP/network.json"
-          jq -e '.InvalidParameters | length == 0' "$RUNNER_TEMP/network.json" > /dev/null
-          jq -e 'all(.Parameters[]; .Type == "String" and (.Value | length > 0))' "$RUNNER_TEMP/network.json" > /dev/null
-          vpc="$(jq -er '.Parameters[] | select(.Name | endswith("/vpc-id")) | .Value' "$RUNNER_TEMP/network.json")"
-          subnets="$(jq -er '.Parameters[] | select(.Name | endswith("/workload-subnet-ids")) | .Value' "$RUNNER_TEMP/network.json")"
-          auth_sg="$(jq -er '.Parameters[] | select(.Name | endswith("/auth-security-group-id")) | .Value' "$RUNNER_TEMP/network.json")"
-          db_sg="$(jq -er '.Parameters[] | select(.Name | endswith("/security-group-id")) | .Value' "$RUNNER_TEMP/network.json")"
-          jq -e 'type == "array" and length == 2 and (unique | length == 2)' <<< "$subnets" > /dev/null
-          {
-            echo "VPC_ID=$vpc"
-            echo "WORKLOAD_SUBNET_IDS=$(jq -r 'join(",")' <<< "$subnets")"
-            echo "AUTH_SECURITY_GROUP_ID=$auth_sg"
-            echo "DATABASE_SECURITY_GROUP_ID=$db_sg"
-          } >> "$GITHUB_ENV"
-      - name: Check VPC, private subnets and security groups
-        run: |
-          aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --query 'Vpcs[0].Tags' > "$RUNNER_TEMP/vpc.json"
-          jq -e --arg environment "$TARGET_ENVIRONMENT" \
-            'any(.[]; .Key == "Project" and .Value == "mecanica") and any(.[]; .Key == "Environment" and .Value == $environment)' \
-            "$RUNNER_TEMP/vpc.json" > /dev/null
-          IFS=',' read -r -a subnet_ids <<< "$WORKLOAD_SUBNET_IDS"
-          aws ec2 describe-subnets --subnet-ids "${subnet_ids[@]}" > "$RUNNER_TEMP/subnets.json"
-          jq -e --arg vpc "$VPC_ID" \
-            '.Subnets | length == 2 and all(.[]; .VpcId == $vpc and .MapPublicIpOnLaunch == false) and ([.[].AvailabilityZone] | unique | length == 2)' \
-            "$RUNNER_TEMP/subnets.json" > /dev/null
-          aws ec2 describe-security-groups --group-ids "$AUTH_SECURITY_GROUP_ID" "$DATABASE_SECURITY_GROUP_ID" > "$RUNNER_TEMP/groups.json"
-          jq -e --arg vpc "$VPC_ID" --arg auth "mecanica-$TARGET_ENVIRONMENT-auth" --arg db "mecanica-$TARGET_ENVIRONMENT-postgres" \
-            '.SecurityGroups | length == 2 and all(.[]; .VpcId == $vpc) and any(.[]; .GroupName == $auth) and any(.[]; .GroupName == $db)' \
-            "$RUNNER_TEMP/groups.json" > /dev/null
-      - name: Deploy with SAM
-        run: |
-          sam deploy --config-env "$TARGET_ENVIRONMENT" --config-file "$GITHUB_WORKSPACE/samconfig.toml" \
-            --template-file "artifacts/deploy/sam-$TARGET_ENVIRONMENT.json" \
-            --parameter-overrides "Environment=$TARGET_ENVIRONMENT" "ArtifactCommit=$ARTIFACT_COMMIT" \
-              "WorkloadSubnetIds=$WORKLOAD_SUBNET_IDS" "AuthSecurityGroupId=$AUTH_SECURITY_GROUP_ID" \
-              "DatabaseSecurityGroupId=$DATABASE_SECURITY_GROUP_ID" "ZipKey=$ZIP_KEY" \
-            --no-confirm-changeset --no-fail-on-empty-changeset --no-progressbar \
-            | tee artifacts/deploy/sam-deploy.txt
-          echo "SAM concluido: $STACK_NAME; codigo/template: $ARTIFACT_COMMIT; workflow: $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: auth-deploy-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/deploy/
-          if-no-files-found: warn
-          retention-days: 7
+    with:
+      component: auth
+      environment: ${{ inputs.environment }}
+      artifact_commit: ${{ inputs.artifact_commit }}

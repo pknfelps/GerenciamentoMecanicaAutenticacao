@@ -1,3 +1,4 @@
+using GerenciamentoMecanica.Autenticacao.Infrastructure.Observability;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
 using Amazon;
@@ -15,6 +16,7 @@ using System.Text.Json;
 
 namespace GerenciamentoMecanica.Autenticacao.InfrastructureTests;
 
+[NonParallelizable]
 public class RuntimeConfigurationTests
 {
     private const string FakeKey = "test-only-signing-key-at-least-32-characters";
@@ -40,12 +42,17 @@ public class RuntimeConfigurationTests
 
         databaseJson = JsonSerializer.Serialize(new
         {
-            username = "mecanica_auth", password = FakePassword,
-            host = "old.invalid", port = 9999, dbname = "old_database"
+            username = "mecanica_auth",
+            password = FakePassword,
+            host = "old.invalid",
+            port = 9999,
+            dbname = "old_database"
         });
 
         var values = new Dictionary<string, string>
         {
+            ["email/v1/invocation-arn"] = $"arn:aws:lambda:us-east-1:121754142617:function:mecanica-{name}-email:live",
+            ["email/v1/contract-version"] = "1",
             ["base/v2/jwt-secret-arn"] = SecretArn("base/jwt"),
             ["base/v2/jwt-issuer"] = $"mecanica-{name}-auth",
             ["base/v2/jwt-audience"] = $"mecanica-{name}-api",
@@ -61,7 +68,9 @@ public class RuntimeConfigurationTests
         {
             Parameters = values.Select(pair => new Parameter
             {
-                Name = $"/mecanica/{name}/{pair.Key}", Value = pair.Value, Type = ParameterType.String
+                Name = $"/mecanica/{name}/{pair.Key}",
+                Value = pair.Value,
+                Type = ParameterType.String
             }).ToList()
         };
 
@@ -105,6 +114,88 @@ public class RuntimeConfigurationTests
         });
     }
 
+    [Test]
+    public async Task SuccessfulBootstrapCountsTwoParametersBatchesAndTwoSecrets()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var loader = new AwsRuntimeConfigurationLoader(parameters, secrets, metrics);
+
+        await loader.LoadAsync(RuntimeEnvironment.Parse("hom", "us-east-1"), certificate);
+
+        Assert.That(listener.Measurements.Select(point => point["integration"]),
+            Is.EqualTo(new[] { "ssm", "ssm", "secretsmanager", "secretsmanager" }));
+        Assert.That(listener.Measurements.All(point => Equals(point["outcome"], "success")), Is.True);
+    }
+
+    [Test]
+    public void IncompleteParametersDoNotCountAsAnSdkTransportFailure()
+    {
+        response.Parameters.Clear();
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var loader = new AwsRuntimeConfigurationLoader(parameters, secrets, metrics);
+
+        Assert.ThrowsAsync<InvalidOperationException>(() => loader.LoadAsync(
+            RuntimeEnvironment.Parse("hom", "us-east-1"), certificate));
+
+        Assert.That(listener.Measurements.Single()["outcome"], Is.EqualTo("success"));
+    }
+
+    [Test]
+    public void SecretTimeoutIsMeasuredBeforeTheExceptionIsSanitized()
+    {
+        secrets.GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<GetSecretValueResponse>(new TimeoutException("private-sdk-value")));
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var loader = new AwsRuntimeConfigurationLoader(parameters, secrets, metrics);
+
+        var error = Assert.ThrowsAsync<InvalidOperationException>(() => loader.LoadAsync(
+            RuntimeEnvironment.Parse("hom", "us-east-1"), certificate));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(listener.Measurements.Select(point => point["outcome"]), Is.EqualTo(new[] { "success", "success", "timeout" }));
+            Assert.That(error!.Message, Does.Not.Contain("private-sdk-value"));
+        });
+    }
+
+    [Test]
+    public async Task ReusedRuntimeDoesNotRepeatBootstrapMetrics()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var bootstrap = new FunctionBootstrap(key => key == "Runtime__Environment" ? "hom" : "us-east-1",
+            _ => parameters, _ => secrets, metrics);
+        await using var runtime = new FunctionRuntimeProvider(bootstrap.InitializeAsync);
+
+        await runtime.RequestCodeAsync("invalid-document", CancellationToken.None);
+        await runtime.RequestCodeAsync("invalid-document", CancellationToken.None);
+
+        Assert.That(listener.Measurements.Count, Is.EqualTo(4));
+    }
+
+    [Test]
+    public async Task FailedInitializationCanRetryWithoutDuplicatingTheSuccessfulRuntime()
+    {
+        using var listener = new IntegrationMetricListener();
+        using var metrics = new IntegrationMetrics();
+        var bootstrap = new FunctionBootstrap(key => key == "Runtime__Environment" ? "hom" : "us-east-1",
+            _ => parameters, _ => secrets, metrics);
+        await using var runtime = new FunctionRuntimeProvider(bootstrap.InitializeAsync);
+        parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<GetParametersResponse>(new InvalidOperationException("private-error")));
+        Assert.ThrowsAsync<InvalidOperationException>(() => runtime.RequestCodeAsync("invalid-document", CancellationToken.None));
+        parameters.GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(response));
+
+        await runtime.RequestCodeAsync("invalid-document", CancellationToken.None);
+        await runtime.RequestCodeAsync("invalid-document", CancellationToken.None);
+
+        Assert.That(listener.Measurements.Select(point => point["outcome"]), Is.EqualTo(new[] { "failure", "success", "success", "success", "success" }));
+    }
+
     [TestCase("hom")]
     [TestCase("prd")]
     public async Task LoadsCurrentSecretsAndBuildsSecureConnection(string name)
@@ -136,8 +227,7 @@ public class RuntimeConfigurationTests
         });
 
         await parameters.Received(1).GetParametersAsync(Arg.Is<GetParametersRequest>(request =>
-                request.WithDecryption == false && request.Names.Count == 9 &&
-                request.Names.ToHashSet().SetEquals(response.Parameters.Select(parameter => parameter.Name))),
+                request.WithDecryption == false && request.Names.Count == 9 && request.Names.All(name => !name.Contains("/email/"))),
             Arg.Any<CancellationToken>());
 
         await secrets.Received(1).GetSecretValueAsync(Arg.Is<GetSecretValueRequest>(request =>
@@ -378,7 +468,29 @@ public class RuntimeConfigurationTests
 
         parameters.Received(1).Dispose();
         secrets.Received(1).Dispose();
-        await parameters.Received(1).GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>());
+        await parameters.Received(2).GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DiscoveryUsesTwoBoundedBatchesAndNoEndpointOverride()
+    {
+        var configuration = await LoadAsync();
+        var requests = parameters.ReceivedCalls().Where(call => call.GetMethodInfo().Name == "GetParametersAsync")
+            .Select(call => (GetParametersRequest)call.GetArguments()[0]!).ToArray();
+        Assert.That(requests.Select(request => request.Names.Count), Is.EqualTo(new[] { 9, 2 }));
+        Assert.That(requests.All(request => request.WithDecryption == false), Is.True);
+        Assert.That(configuration.Email!.FunctionArn, Is.EqualTo($"arn:aws:lambda:us-east-1:121754142617:function:mecanica-{environment}-email:live"));
+        Assert.That(EmailInvocationConfiguration.ClientConfiguration().IgnoreConfiguredEndpointUrls, Is.True);
+    }
+
+    [TestCase("contract-version", "2")]
+    [TestCase("invocation-arn", "arn:aws:lambda:us-east-1:121754142617:function:mecanica-prd-email:live")]
+    [TestCase("invocation-arn", "http://localhost:3001")]
+    public void InvalidEmailDiscoveryFailsBeforeReadingSecrets(string field, string value)
+    {
+        Parameter("email/v1/" + field).Value = value;
+        AssertSanitized(Assert.ThrowsAsync<InvalidOperationException>(() => LoadAsync())!);
+        Assert.That(secrets.ReceivedCalls(), Is.Empty);
     }
 
     [Test]
@@ -441,7 +553,7 @@ public class RuntimeConfigurationTests
         });
     }
     [Test]
-    public async Task HandlerReusesLoadedConfigurationWithoutReadingAwsAgain()
+    public async Task InvalidDocumentDoesNotLoadAwsConfiguration()
     {
         await using var handler = new FunctionHandler(new FunctionRuntimeProvider(Bootstrap().InitializeAsync));
         var context = Substitute.For<ILambdaContext>();
@@ -449,6 +561,8 @@ public class RuntimeConfigurationTests
         context.Logger.Returns(Substitute.For<ILambdaLogger>());
         var request = new APIGatewayProxyRequest
         {
+            HttpMethod = "POST",
+            Path = "/customers/auth/request-code",
             Body = "{\"document\":\"invalid\"}",
             Headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" }
         };
@@ -456,10 +570,9 @@ public class RuntimeConfigurationTests
         for (var attempt = 0; attempt < 2; attempt++)
             Assert.That((await handler.HandleAsync(request, context)).StatusCode, Is.EqualTo(400));
 
-        await parameters.Received(1).GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>());
-        await secrets.Received(2).GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>());
-        parameters.Received(1).Dispose();
-        secrets.Received(1).Dispose();
+        await parameters.DidNotReceive().GetParametersAsync(Arg.Any<GetParametersRequest>(), Arg.Any<CancellationToken>());
+        await secrets.DidNotReceive().GetSecretValueAsync(Arg.Any<GetSecretValueRequest>(), Arg.Any<CancellationToken>());
+
     }
 
     [Test]
@@ -479,6 +592,8 @@ public class RuntimeConfigurationTests
         context.Logger.Returns(Substitute.For<ILambdaLogger>());
         var request = new APIGatewayProxyRequest
         {
+            HttpMethod = "POST",
+            Path = "/customers/auth/request-code",
             Body = "{\"document\":\"52998224725\"}",
             Headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" }
         };
