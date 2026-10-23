@@ -21,6 +21,10 @@ CI de ambos roda em todo PR para develop/main, sem filtros de caminho, cobrindo 
 
 Package faz restore/build/testes e SAM build da função escolhida. Verifica DLL/deps/runtimeconfig e isolamento das dependências: Auth contém certificado RDS e dois arquivos OTel, sem MailKit/EmailFunction; Email contém MailKit, sem Npgsql/Auth/testes. O build passa ao job publish pelo ID exato do artefato GitHub da mesma execução, com sete dias de retenção. OpenAPI só acompanha auth.
 
+**Correção de transporte em 23/10/2026:** o job package arquiva `.aws-sam/build/` e, somente para auth, `contracts/openapi.json` em um único `function-build.tar.gz`. O upload/download continua selecionando o ID exato da mesma execução. Publish extrai o arquivo e verifica template, DLL, deps e runtimeconfig no caminho original antes de executar SAM; auth também exige o OpenAPI. Isso evita que a raiz escolhida automaticamente pelo upload-artifact remova `.aws-sam/build/` quando email envia somente essa pasta. Não usa o template de origem como fallback nem recompila no job publish.
+
+Conferência local dessa correção: actionlint 1.7.12 com ShellCheck 0.11.0 aprovado. Os trechos reais do workflow foram executados sobre os builds SAM existentes da AE.9, em diretórios descartáveis: 59 arquivos auth e 11 email preservados byte a byte após transporte/extração; CodeUri resolve a DLL esperada, OpenAPI acompanha somente auth e os dois templates restaurados passam em sam validate --lint. Evidências locais na API em artifacts/ae10/publish-artifact-0z3wdg51/review.json. Sem nova compilação/regressão .NET, mudança das funções, execução remota ou acesso AWS. Após publicar a correção, iniciar uma nova execução completa do publish na revisão atualizada; reexecutar somente o job antigo não altera o workflow nem o artefato daquela execução.
+
 Publish usa AWS_ROLE_ARN (auth) ou AWS_EMAIL_ROLE_ARN (email), exigindo ARN exato da role do ambiente/componente. Não usa fallback de autorização: variável ausente/divergente encerra a validação antes de OIDC.
 
 | Objeto | Auth | Email |
