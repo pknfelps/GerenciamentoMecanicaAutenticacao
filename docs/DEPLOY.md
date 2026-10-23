@@ -1,8 +1,10 @@
-# Publicação e operação da autenticação com SAM
+# Publicação e operação das funções com SAM
+
+> **Procedimento vigente AE.8 (22/10/2026):** [auth/email, pré-requisitos, publicação imutável, rotas e descarte](AE8_WORKFLOWS_E_GATEWAY.md). A ordem é bootstrap/base → banco e email → API/auth → Gateway; descarte inverso por dependência. AWS_EMAIL_ROLE_ARN deve ser cadastrado após o bootstrap aprovado. As seções datadas abaixo preservam decisões/evidências anteriores; fluxos de documento isolado e caminhos antigos não representam o contrato novo.
 
 ## Recursos e pré-requisitos
 
-Auth usa SAM CLI 1.167.0/CloudFormation com ZIP .NET 10/linux-x64. [Template](../template.yaml) declara função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. [samconfig.auth.toml](../samconfig.auth.toml) fixa stacks hom/prd, região e bucket; configure-aws-credentials restringe conta 121754142617. Bootstrap/base/banco/Gateway continuam Terraform; IAM runtime/SG/bucket/contratos e ZIPs ficam fora do descarte auth com CodeUri objeto; templates operacionais SAM são removidos. Templates antigos com CodeUri string ainda seguem a limpeza anterior da chave corrente.
+Auth usa SAM CLI 1.167.0/CloudFormation com ZIP .NET 10/linux-x64. [Template auth](../templates/auth.yaml) declara função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. [samconfig.auth.toml](../samconfig.auth.toml) fixa stacks hom/prd, região e bucket; configure-aws-credentials restringe conta 121754142617. Bootstrap/base/banco/Gateway continuam Terraform; IAM runtime/SG/bucket/contratos e ZIPs ficam fora do descarte auth com CodeUri objeto; templates operacionais SAM são removidos. Templates antigos com CodeUri string ainda seguem a limpeza anterior da chave corrente.
 
 Conferência somente leitura em 2026-10-11 na conta 121754142617: nenhuma função, stack, log group ou parâmetro auth/v2; nenhum objeto ou versão histórica nos backends hom/auth e prd/auth. As roles runtime/deploy hom/prd existem; a role CI ainda não existe. Os parâmetros/SGs de base/banco estão ausentes. Por isso o código Terraform auth foi retirado sem importação ou operação de destroy; nenhum estado foi apagado.
 

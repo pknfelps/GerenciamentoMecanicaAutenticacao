@@ -1,100 +1,25 @@
 name: auth-destroy
-run-name: auth-destroy / ${{ inputs.environment }}
+run-name: auth-destroy / ${{ inputs.environment }} / ${{ github.sha }}
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Descartar auth: develop/hom ou main/prd'
+        description: Develop/hom ou main/prd
         required: true
         default: hom
         type: choice
         options: [hom, prd]
 permissions: {}
-defaults:
-  run:
-    shell: bash
 concurrency:
   group: auth-${{ inputs.environment }}
   cancel-in-progress: false
-env:
-  TARGET_ENVIRONMENT: ${{ inputs.environment }}
-  STACK_NAME: mecanica-${{ inputs.environment }}-auth
-  AWS_REGION: us-east-1
-  AWS_PAGER: ''
-  SAM_CLI_TELEMETRY: '0'
-
 jobs:
   destroy:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    environment: ${{ inputs.environment }}
+    uses: ./.github/workflows/reusable-destroy.yml
     permissions:
       contents: read
+      actions: read
       id-token: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Check branch and environment
-        run: |
-          case "$TARGET_ENVIRONMENT" in hom) branch=develop ;; prd) branch=main ;; *) exit 1 ;; esac
-          test "$GITHUB_REF" = "refs/heads/$branch"
-      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
-        with:
-          version: '1.167.0'
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          allowed-account-ids: '121754142617'
-          role-session-name: auth-destroy-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Check Gateway removal
-        run: |
-          set -euo pipefail
-          case "$TARGET_ENVIRONMENT" in hom|prd) ;; *) exit 1 ;; esac
-          test "$AWS_REGION" = us-east-1
-          name="mecanica-$TARGET_ENVIRONMENT-gateway"
-          apis="$(aws apigateway get-rest-apis --query "items[?name=='$name'].id" --output json)"
-          if ! jq -e 'type == "array" and length == 0' <<< "$apis" > /dev/null; then
-            echo "::error::$TARGET_ENVIRONMENT: REST API $name encontrada ou resposta invalida. Conclua gateway-destroy."
-            exit 1
-          fi
-          links="$(aws apigatewayv2 get-vpc-links --query "Items[?Name=='$name'].VpcLinkId" --output json)"
-          if ! jq -e 'type == "array" and length == 0' <<< "$links" > /dev/null; then
-            echo "::error::$TARGET_ENVIRONMENT: VPC Link $name encontrado ou resposta invalida. Conclua gateway-destroy."
-            exit 1
-          fi
-
-      - name: Delete authentication with SAM
-        run: |
-          sam delete \
-            --config-env "$TARGET_ENVIRONMENT" \
-            --config-file "$GITHUB_WORKSPACE/samconfig.auth.toml" \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --no-prompts
-          echo "Recursos SAM removidos: $STACK_NAME; falta confirmar liberacao da rede. IAM persistente, bucket e contratos preservados." >> "$GITHUB_STEP_SUMMARY"
-      - name: Check authentication network removal
-        run: |
-          set -euo pipefail
-
-          groups="$(aws ec2 describe-security-groups \
-            --filters "Name=group-name,Values=mecanica-$TARGET_ENVIRONMENT-auth" \
-            --query 'SecurityGroups[].{Id:GroupId,Egress:IpPermissionsEgress}' --output json)"
-          if ! jq -e 'type == "array" and all(.[]; (.Id | type == "string") and (.Egress | type == "array" and length == 0))' \
-            <<< "$groups" > /dev/null; then
-            echo "::error::$TARGET_ENVIRONMENT: regras de saida da autenticacao remanescentes ou resposta invalida. Conclua auth-destroy."
-            exit 1
-          fi
-          group_ids="$(jq -r '.[].Id' <<< "$groups")"
-          for group in $group_ids; do
-            interfaces="$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$group" \
-              --query 'NetworkInterfaces[].NetworkInterfaceId' --output json)"
-            if ! jq -e 'type == "array" and length == 0' <<< "$interfaces" > /dev/null; then
-              echo "::error::$TARGET_ENVIRONMENT: ENIs da autenticacao no SG $group pendentes ou resposta invalida. Aguarde a liberacao e repita auth-destroy."
-              exit 1
-            fi
-          done
-
-          echo "Descarte auth confirmado em $TARGET_ENVIRONMENT: sem ENIs ou regras de saida remanescentes." >> "$GITHUB_STEP_SUMMARY"
+    with:
+      component: auth
+      environment: ${{ inputs.environment }}

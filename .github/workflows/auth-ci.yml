@@ -3,96 +3,34 @@ on:
   pull_request:
     branches: [develop, main]
   workflow_dispatch:
-
 permissions: {}
-defaults:
-  run:
-    shell: bash
 concurrency:
   group: auth-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
-env:
-  AWS_REGION: us-east-1
-  AWS_PAGER: ''
-  DOTNET_NOLOGO: 'true'
-  SAM_CLI_TELEMETRY: '0'
-
 jobs:
-  dotnet:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+  checks:
+    uses: ./.github/workflows/reusable-ci.yml
     permissions:
       contents: read
       id-token: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Check CI branch and PR source
-        env:
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            test "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" || { echo '::error::Fork PRs require a branch in this repository for AWS package access'; exit 1; }
-          else
-            case "$GITHUB_REF" in refs/heads/develop|refs/heads/main) ;; *) exit 1 ;; esac
-          fi
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
-        with:
-          global-json-file: global.json
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
-          allowed-account-ids: '121754142617'
-          role-session-name: auth-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Download and verify Auth.Contracts 1.0.0
-        env:
-          PACKAGE_SHA256: b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9
-        run: |
-          package=GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
-          key="packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/$package"
-          mkdir -p artifacts/auth-contracts
-          aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$key" "artifacts/auth-contracts/$package" > /dev/null
-          aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
-            --expected-bucket-owner 121754142617 --key "$key.sha256" "$RUNNER_TEMP/package.sha256" > /dev/null
-          printf '%s\n' "$PACKAGE_SHA256" | cmp - "$RUNNER_TEMP/package.sha256"
-          printf '%s  %s\n' "$PACKAGE_SHA256" "artifacts/auth-contracts/$package" | sha256sum --check --strict
-          echo "NUGET_PACKAGES=$RUNNER_TEMP/nuget-$PACKAGE_SHA256" >> "$GITHUB_ENV"
-      - name: Build and test the complete solution
-        run: |
-          docker info > /dev/null
-          dotnet restore GerenciamentoMecanicaServerless.slnx
-          dotnet build GerenciamentoMecanicaServerless.slnx -c Release --no-restore
-          dotnet test GerenciamentoMecanicaServerless.slnx -c Release --no-build --no-restore
-
-  configuration:
+    with:
+      component: auth
+  # Stable required check names, including when a called job fails or is canceled.
+  dotnet:
+    needs: checks
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
+    permissions: {}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
-        with:
-          version: '1.167.0'
-      - name: Validate SAM template
-        run: sam validate --lint --template-file templates/auth.yaml --region "$AWS_REGION"
-      - name: Validate workflows
-        env:
-          ACTIONLINT_VERSION: 1.7.12
-        run: |
-          cd "$RUNNER_TEMP"
-          archive="actionlint_$ACTIONLINT_VERSION""_linux_amd64.tar.gz"
-          curl --fail --location --silent --show-error -O "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$archive"
-          curl --fail --location --silent --show-error -o checksums.txt "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_$ACTIONLINT_VERSION""_checksums.txt"
-          awk -v file="$archive" '$2 == file { print; found=1 } END { if (!found) exit 1 }' checksums.txt | sha256sum --check --strict
-          tar -xzf "$archive" actionlint
-          cd "$GITHUB_WORKSPACE"
-          "$RUNNER_TEMP/actionlint" -color
+      - env:
+          CHECK_RESULT: ${{ needs.checks.result }}
+        run: test "$CHECK_RESULT" = success
+  configuration:
+    needs: checks
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - env:
+          CHECK_RESULT: ${{ needs.checks.result }}
+        run: test "$CHECK_RESULT" = success

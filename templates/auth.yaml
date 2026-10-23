@@ -51,14 +51,14 @@ Resources:
       IpProtocol: tcp
       FromPort: 443
       ToPort: 443
-      Description: SSM e Secrets Manager via NAT existente
+      Description: SSM, Secrets Manager, Invoke Lambda e OTLP externo via NAT existente
 
   AuthFunction:
     Type: AWS::Serverless::Function
     DependsOn: [PostgresEgress, HttpsEgress]
     Properties:
       FunctionName: !Sub 'mecanica-${Environment}-auth'
-      Description: !Sub 'Validacao de cliente e emissao JWT - ${ArtifactCommit}'
+      Description: !Sub 'Autenticacao por codigo e emissao JWT - ${ArtifactCommit}'
       CodeUri: ../AuthFunction/
       PackageType: Zip
       Runtime: dotnet10

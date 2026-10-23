@@ -80,3 +80,11 @@ AE.5 concluída no escopo local; API/AuthFunction ainda não invocam EmailFuncti
 [Contrato, composição e evidências](AE6_AUTENTICACAO_POR_CODIGO.md). Duas rotas estritas, sem emissão por documento isolado; store AE.3 integrado ao Invoke v1 da AE.5. Pending persistido antes do envio, Ready condicional após captura, invalidação best effort, confirmação/consumo atômicos e JWT atual sem dados extras. Descoberta em dois lotes SSM (9+2), alias do ambiente/contrato 1, MaxErrorRetry=0 e sem overrides de endpoint AWS. Mesmos limites de bootstrap, deadline e flush; nomes das duas rotas no manifesto e categorias code-requested/rate-limited.
 
 Restore/build Release sem avisos/erros, 438 testes sem falhas/ignorados, publish Linux/SAM de ambas conferidos. Fluxo handler/PostgreSQL/EmailFunction/SMTP4dev/confirmar/JWT comprovado localmente com AWS injetada, incluindo concorrência, erros e sanitização. O OpenAPI Serverless agora é 2.0.0; publicar coordenadamente com Gateway na AE.8. API permanece para AE.7. Sem SQL, IAM, workflows, planos/aplicações ou chamadas AWS nesta etapa.
+
+## AE.7 — integração da API comprovada localmente
+
+[API: transporte e acesso Customer](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE7_API_ENVIO_E_ACESSO_CUSTOMER.md) concluídos: Invoke em todos os modos sem SMTP próprio/simulação, cadastro Active/titularidade, ClockSkew zero e decisão 200 com approved explícito. 1.212 testes da API aprovados; caminho real API container/SDK/SAM/EmailFunction/SMTP4dev comprovado, inclusive falha de notificação sem desfazer criação persistida. Contratos do Serverless e código das funções não foram alterados nesta etapa. Próximo passo AE.8: publicação/workflows/Gateway, seguido do roteiro conjunto AE.9 e comprovação AWS autorizada AE.10.
+
+## AE.8 — preparação concluída localmente, 22/10/2026
+
+[Entradas e reutilizáveis auth/email, imutabilidade, dependências e Gateway](AE8_WORKFLOWS_E_GATEWAY.md). SAMs hom/prd, lint, Terraform e 438 testes aprovados. Proteções/identidade GitHub reconferidas em somente leitura; checks obrigatórios preservados. Sem workflow remoto ou aplicação AWS. Próxima etapa AE.9; publicação integrada permanece AE.10.

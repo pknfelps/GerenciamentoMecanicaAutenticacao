@@ -1,6 +1,6 @@
 # Funções serverless da oficina
 
-> **Extra AE — 22/10/2026:** AE.1–AE.6 preparadas e validadas nos seus escopos. EmailFunction e autenticação por código estão implementadas localmente; publicação/Gateway e integração da API seguem nas AE.8/AE.7. [Fluxo e evidências AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Checklists oficiais preservados.
+> **Extra AE — 22/10/2026:** AE.1–AE.6 preparadas e validadas nos seus escopos. EmailFunction e autenticação por código estão implementadas localmente; integração da API comprovada localmente na AE.7; workflows/Gateway preparados na [AE.8](docs/AE8_WORKFLOWS_E_GATEWAY.md); publicação AWS permanece na AE.10. [Fluxo e evidências AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Checklists oficiais preservados.
 
 AuthFunction .NET 10 autentica por documento e código de uso único, com desafio PostgreSQL e envio por Invoke à EmailFunction. EmailFunction concentra SMTP/MIME e captura no SMTP4dev, sem relay externo. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
 
@@ -39,9 +39,9 @@ JSON UTF-8 estrito de até 4 KiB, inclusive base64, sem extras/duplicações/nul
 
 Cliente ausente/Inactive/sem e-mail utilizável recebe 202 sem escrita/limpeza/envio. Cliente elegível persiste Pending antes do Invoke e só vira Ready após captura confirmada. Falha invalida quando possível sem mascarar a original; Pending nunca autentica. Cooldown de 60 s, cinco pedidos/hora, validade de cinco minutos e cinco tentativas; consumo atômico, sem transação aberta durante envio.
 
-JWT HS256 mantém UUID/nome cadastrado, role Customer e dez minutos, sem documento, e-mail, código, challengeId ou OS. Assinatura/consumo só retornam token após commit; sem refresh/replay/garantia de entrega única. A API aplica titularidade e regras de OS; Active/ClockSkew zero e decisão explícita serão implementados na AE.7.
+JWT HS256 mantém UUID/nome cadastrado, role Customer e dez minutos, sem documento, e-mail, código, challengeId ou OS. Assinatura/consumo só retornam token após commit; sem refresh/replay/garantia de entrega única. A API aplica titularidade e regras de OS; Active/ClockSkew zero e decisão explícita foram implementados e conferidos localmente na AE.7.
 
-A rota antiga/desconhecida retorna 404 no handler; método incorreto retorna 405/Allow: POST. **Publicar coordenadamente na AE.8:** o Gateway atual ainda precisa ser adaptado às duas rotas, sem Authorizer. Contrato/handler novo não deve ser provisionado isoladamente no Gateway antigo.
+A rota antiga/desconhecida retorna 404 no handler; método incorreto retorna 405/Allow: POST. **Publicar coordenadamente na AE.8:** o Terraform Gateway já exige as duas rotas na AE.8, sem Authorizer; sua implantação coordenada continua pendente. Contrato/handler novo não deve ser provisionado isoladamente no Gateway antigo.
 
 ## Consumo do Auth.Contracts
 
@@ -96,20 +96,20 @@ Mecanica.Auth mede solicitações de código e confirmações/duração por resu
 
 ## Workflows, artefatos e operação AWS
 
-| Workflow | Fluxo |
-|---|---|
-| [auth-ci](.github/workflows/auth-ci.yml) | PR/manual: pacote, suíte .NET/PostgreSQL, SAM/actionlint |
-| [auth-publish](.github/workflows/auth-publish.yml) | Manual: testes/build SAM → publicação ZIP/template/OpenAPI |
-| [auth-provision](.github/workflows/auth-provision.yml) | Manual: environment/artifact_commit → validar versão/contrato/rede → sam deploy, job único |
-| [auth-destroy](.github/workflows/auth-destroy.yml) | Manual: checar Gateway → sam delete → checar ENIs/egress, job único |
+| Auth | Email | Fluxo compartilhado |
+|---|---|---|
+| [auth-ci](.github/workflows/auth-ci.yml) | [email-ci](.github/workflows/email-ci.yml) | PR/manual: solução completa, ambos SAMs, actionlint |
+| [auth-publish](.github/workflows/auth-publish.yml) | [email-publish](.github/workflows/email-publish.yml) | Manual: testes/build SAM → ZIP/template/checksum imutável; OpenAPI somente auth |
+| [auth-provision](.github/workflows/auth-provision.yml) | [email-provision](.github/workflows/email-provision.yml) | Manual: environment/artifact_commit, rede/dependências/VersionId → deploy SAM |
+| [auth-destroy](.github/workflows/auth-destroy.yml) | [email-destroy](.github/workflows/email-destroy.yml) | Manual: consumidores ausentes → sam delete → ENIs/egress ausentes |
 
-Develop/hom e main/prd, OIDC e fila auth-ambiente. O disparo manual autoriza cada operação completa, sem aprovação intermediária; o workflow precisa existir na main para Run workflow. SAM/CloudFormation faz deploy/rollback nativos, sem comandos CloudFormation diretos.
+Wrappers fixam componente; quatro reusable-*.yml concentram etapas comuns com allowlists. Develop/hom e main/prd, OIDC e filas por componente/ambiente; sem aprovação adicional. Required checks configuration/dotnet preservados como gates finais do auth-ci, abrangendo também EmailFunction e seu SAM. Role CI somente leitura do pacote; Environment AWS_ROLE_ARN para auth e **AWS_EMAIL_ROLE_ARN** para email. Ver [AE.8: pré-requisitos, artefatos, permissões e limites](docs/AE8_WORKFLOWS_E_GATEWAY.md).
 
 Auth usa SG da base e role persistente do bootstrap. Stack administra função/versões/alias/logs, egress TCP 5432/443 e seis campos auth/v2. Gateway consome versão numérica, não alias live/$LATEST; cada nova versão precisa de atualização Gateway.
 
 ZIP usa chave nativa sam/auth/ambiente/commit e bucket versionado. Template imutável fixa **Bucket/Key/Version** antes do checksum. Republicação idêntica conserva VersionId original após comparar ZIP/template; divergência ou template antigo sem Version exige commit novo. Provision confere a versão exata e SAM usa Code.S3ObjectVersion. A chave é gravável, mas nova versão corrente não altera a seleção publicada.
 
-No SAM CLI 1.167.0, CodeUri objeto preserva ZIP no sam delete; stack/templates operacionais são removidos. Contratos, artefatos de outras revisões, bucket, IAM e SG da base persistem. Auth-destroy exige Gateway/VPC Link ausentes e, ao final, ausência de ENIs/egress; pendência bloqueia sem exclusão manual/espera automática. Ordem: Gateway → API/auth → banco → base.
+No SAM CLI 1.167.0, CodeUri objeto preserva ZIP no sam delete; stack/templates operacionais são removidos. Contratos, artefatos de outras revisões, bucket, IAM e SG da base persistem. Auth-destroy exige Gateway/VPC Link ausentes e, ao final, ausência de ENIs/egress; pendência bloqueia sem exclusão manual/espera automática. Ordem: Gateway → API/auth → banco/email → base/SMTP4dev. Email-destroy checa API/auth antes de remover somente a stack email.
 
 [Deploy/descarte completo](docs/DEPLOY.md) · [Contratos SSM](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) · [GitHub Actions](https://github.com/pknfelps/GerenciamentoMecanicaServerless/actions).
 
@@ -145,3 +145,9 @@ AE.3 revisada: tabelas no Init.sql do banco vazio, sem migrations nem regras de 
 ## AE.6 — autenticação por código concluída localmente
 
 [Implementação, testes e limites](docs/AE6_AUTENTICACAO_POR_CODIGO.md): duas rotas, store transacional integrado, Invoke v1 sem retry, descoberta email/v1, logs/spans fixos e 438 testes aprovados. Fluxo com PostgreSQL/SMTP4dev reais comprovado localmente, com bootstrap/Invoke AWS injetados. Pacotes/SAM conferidos, sem deploy. Próximo passo: AE.7, integração e regras Customer da API.
+
+[AE.7 da API concluída localmente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE7_API_ENVIO_E_ACESSO_CUSTOMER.md): transporte central e operações Customer conferidos, sem deploy. AE.8 está preparada localmente; o próximo passo é AE.9, consolidar Postman, diagramas e validação local conjunta.
+
+## AE.8 — publicação preparada
+
+[Workflows separados/reutilizáveis, Gateway e evidências locais](docs/AE8_WORKFLOWS_E_GATEWAY.md). EmailFunction continua privada; API/auth dependem do contrato email/v1. Nenhum workflow remoto ou deploy AWS executado nesta preparação.
