@@ -1,247 +1,159 @@
-# Autenticação de Clientes do Sistema de Gerenciamento de Mecânica
+# Funções serverless da oficina
 
-Repositório da função AWS Lambda que valida o documento (CPF ou CNPJ numérico) de um cliente e emite um JWT para acesso às suas ordens de serviço. O login com senha dos usuários internos permanece na API da oficina.
+> **Extra AE — 22/10/2026:** AE.1–AE.6 preparadas e validadas nos seus escopos. EmailFunction e autenticação por código estão implementadas localmente; integração da API comprovada localmente na AE.7; workflows/Gateway preparados na [AE.8](docs/AE8_WORKFLOWS_E_GATEWAY.md); publicação AWS permanece na AE.10. [Fluxo e evidências AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Checklists oficiais preservados.
 
-## Provisionamento com SAM — 2026-10-11
+AuthFunction .NET 10 autentica por documento e código de uso único, com desafio PostgreSQL e envio por Invoke à EmailFunction. EmailFunction concentra SMTP/MIME e captura no SMTP4dev, sem relay externo. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
 
-A autenticação usa SAM/CloudFormation com ZIP, conforme [ADR 009](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/009-SAM-AUTENTICACAO.md). [template.yaml](template.yaml) declara os recursos e [samconfig.toml](samconfig.toml) configura as stacks hom/prd. Bootstrap/base/banco/Gateway continuam Terraform; role/policies auth-runtime persistem no bootstrap.
+## Estado e escopo
 
-CI/testes .NET/PostgreSQL, pacote Auth.Contracts 1.0.0, HTTP/JWT e conexão segura não mudam. O código Terraform auth foi retirado depois da conferência AWS: nenhuma função/stack/log group/parâmetro auth ou estado atual/histórico em hom/prd. O novo bootstrap precisa de aplicação aprovada; role CI, quota e recriação base/banco/Job continuam pendentes.
+Função/SAM/Gateway/JWT/SQL e telemetria foram implantados e conferidos em **hom**. A revisão 01225acd… publicou a Lambda 13 com VersionId S3 fixado e hash do ZIP igual ao código implantado. O ambiente foi destruído ao encerrar a E6 em 21/10/2026; não há endpoint atual. Prd/coexistência, carga e concorrência de publicação não foram comprovados; dispensas e limites não são testes aprovados.
 
-## Estado da implementação
+[Revisão E6](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/REVISAO_E6_2026-10-21.md), [VersionId/artefatos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/VALIDACAO_PROTECAO_ARTEFATOS_2026-10-21.md), [aceite E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md) e [descarte/custos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md).
 
-Solução .NET 10 organizada em Domain, Application, Infrastructure e Function, com ApplicationTests, ContractTests, InfrastructureTests e FunctionTests. Handler, consulta de elegibilidade e emissão JWT estão implementados e testados localmente. A função ainda não está implantada ou exposta pelo Gateway.
+## Estrutura e arquitetura
 
-Infraestrutura SAM e quatro workflows estão preparados. A validação local aprovou 217 testes sem ignorados e build/empacotamento SAM, incluindo certificado RDS. E3.1/E3.2/E3.6/E3.9 e E2.12 permanecem abertas até suas validações reais.
-## Estrutura da solução
+| Projeto | Responsabilidade |
+|---|---|
+| Domain | Identidade, status e elegibilidade; sem AWS/banco |
+| Application | Caso de uso e interfaces de consulta/emissão |
+| Infrastructure | Configuração AWS, PostgreSQL, documentos/JWT e métricas de acessos |
+| AuthFunction | Handler REST proxy, bootstrap/runtime reutilizável e composição OTel |
+| EmailFunction | Contrato Invoke privado e transporte SMTP centralizado; sem banco/JWT |
+| EmailFunctionTests | Contrato, configuração, handler e captura SMTP4dev descartável |
+| ApplicationTests/ContractTests/InfrastructureTests/AuthFunctionTests | Regras, pacote, configuração/adaptadores/PostgreSQL e contrato do handler |
 
-A [solução](GerenciamentoMecanicaAutenticacao.slnx) reúne os quatro projetos de produção, ApplicationTests para domínio/caso de uso, ContractTests independente e InfrastructureTests para configuração, adaptadores e integração PostgreSQL, e FunctionTests para o contrato HTTP/serialização Lambda. As dependências das camadas de produção seguem esta organização:
+Projetos net10.0, Npgsql 10.0.2/Dapper e pacote Auth.Contracts [1.0.0]. SAM CLI 1.167.0/CloudFormation entrega ZIP linux-x64/framework-dependent, runtime dotnet10/x86_64, 512 MB e timeout 15 s. Não há Dockerfile da função nem novo executável local; [Compose](compose.observability.yaml) inicia somente Collector para conferência manual.
 
-| Projeto | Responsabilidade | Referências de projetos |
+O código local implementa [request-code/verify-code e envio central](docs/AE6_AUTENTICACAO_POR_CODIGO.md). As evidências AWS anteriores descrevem a revisão antiga; não comprovam implantação do novo contrato.
+
+## Contrato HTTP/JWT
+
+[contracts/openapi.json](contracts/openapi.json), versão 2.0.0, substitui POST /customers/validate por:
+
+| Rota | Entrada | Sucesso |
 |---|---|---|
-| [Domain](Domain/Domain.csproj) | Modelos e regras do domínio da autenticação | Nenhuma |
-| [Application](Application/Application.csproj) | Casos de uso e interfaces de consulta/emissão | Domain |
-| [Infrastructure](Infrastructure/Infrastructure.csproj) | Configuração AWS, banco e adaptação do pacote compartilhado | Domain e Application |
-| [Function](Function/Function.csproj) | Entrada Lambda e composição das dependências | Application e Infrastructure |
+| POST /customers/auth/request-code | document | 202 com challengeId opaco e mensagem genérica, sem código |
+| POST /customers/auth/verify-code | challengeId, code, document | 200 com string JSON JWT Customer |
 
-Todos são bibliotecas net10.0, com nullable e implicit usings habilitados. Assemblies e namespaces usam o prefixo GerenciamentoMecanica.Autenticacao seguido do nome da camada. Domain e Application não dependem de AWS, banco ou tipos Lambda. Infrastructure é a camada de produção que referencia Auth.Contracts [1.0.0]; ContractTests continua consumindo o pacote diretamente e sem referência aos projetos de produção.
+JSON UTF-8 estrito de até 4 KiB, inclusive base64, sem extras/duplicações/null. Propriedades comparadas sem distinção de maiúsculas. Documento normalizado pelo pacote antes do bootstrap; código com oito dígitos ASCII e UUID não vazio. Entradas inválidas não inicializam AWS ou SQL. Authorization não evita a verificação. Erros fixos 400/401/429/500 em problem+json; Retry-After no limite; no-store em todas as respostas.
 
-Não há classes ou interfaces de exemplo; cada classe, interface ou enum tem arquivo próprio. Domain define identidade/status e elegibilidade; Application define interfaces e o caso de uso; Infrastructure adapta documentos, PostgreSQL e JWT; Function compõe o caso de uso no contexto descartável e adapta eventos REST proxy às respostas HTTP. A infraestrutura e as permissões da Lambda foram preparadas na parte 5. A parte 6 entrega os workflows; publicação e implantação serão iniciadas pelo mantenedor.
+Cliente ausente/Inactive/sem e-mail utilizável recebe 202 sem escrita/limpeza/envio. Cliente elegível persiste Pending antes do Invoke e só vira Ready após captura confirmada. Falha invalida quando possível sem mascarar a original; Pending nunca autentica. Cooldown de 60 s, cinco pedidos/hora, validade de cinco minutos e cinco tentativas; consumo atômico, sem transação aberta durante envio.
 
-## Responsabilidades e limites
+JWT HS256 mantém UUID/nome cadastrado, role Customer e dez minutos, sem documento, e-mail, código, challengeId ou OS. Assinatura/consumo só retornam token após commit; sem refresh/replay/garantia de entrega única. A API aplica titularidade e regras de OS; Active/ClockSkew zero e decisão explícita foram implementados e conferidos localmente na AE.7.
 
-A função deverá normalizar/validar documento CPF/CNPJ, consultar diretamente o cliente e seu status com credencial de leitura limitada, verificar elegibilidade e emitir JWT de role Customer. Conexões serão encerradas ao fim da operação, sem pooling, conforme a arquitetura aceita.
+A rota antiga/desconhecida retorna 404 no handler; método incorreto retorna 405/Allow: POST. **Publicar coordenadamente na AE.8:** o Terraform Gateway já exige as duas rotas na AE.8, sem Authorizer; sua implantação coordenada continua pendente. Contrato/handler novo não deve ser provisionado isoladamente no Gateway antigo.
 
-Não haverá login do cliente com senha, refresh token ou gerenciamento de OS nesta função. Criação de OS continua exclusiva da oficina. A API valida assinatura, role e propriedade das ordens ao receber o token. Segredos não vêm do corpo da requisição.
-
-## Fluxo planejado
-
-```mermaid
-sequenceDiagram
-    participant C as Cliente
-    participant G as API Gateway REST
-    participant L as Lambda .NET
-    participant B as RDS PostgreSQL
-    participant A as API da oficina
-    C->>G: POST /customers/validate (document)
-    G->>L: Encaminhar requisição
-    L->>B: Consultar cliente e status
-    B-->>L: Cadastro elegível
-    L-->>G: 200 com JWT Customer
-    G-->>C: Token
-    C->>G: Consultar OS com Bearer token
-    G->>A: Encaminhar via VPC Link/NLB
-    A->>A: Validar JWT e propriedade da OS
-    A-->>G: Resposta autorizada
-    G-->>C: Resultado da consulta
-```
-
-O diagrama não representa uma implantação existente. Casos de documento inválido e cliente inelegível seguem o contrato abaixo.
-
-## Contrato HTTP
-
-`POST /customers/validate`, encaminhado pelo API Gateway à Lambda, com `Content-Type: application/json`:
-
-```json
-{
-  "document": "529.982.247-25"
-}
-```
-
-| Código | Resultado |
-|---|---|
-| 200 | Token no corpo, sem envelope de sessão/refresh token |
-| 400 | Corpo ou documento inválido |
-| 401 | Documento válido sem cliente elegível: inexistente ou Inativo |
-| 500 | Falha técnica tratada pelo handler, incluindo configuração, SQL e cancelamento; não converter em 400/401 |
-
-A fonte completa é o [contrato de acesso e autenticação](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md). A função usará HS256, expiração de dez minutos, issuer/audience/chave compatíveis com a API do mesmo ambiente e claims obtidas do cadastro. Configuração secreta ficará no Secrets Manager.
-
-O Init.sql do repositório de banco já contém o campo customers.status, com valor inicial Active, e a credencial mecanica_auth tem SELECT restrito a id, name, document e status. Esquema e credenciais foram entregues e validados em hom. A consulta e sua integração ao handler estão implementadas e testadas com PostgreSQL local; implantação Lambda e validação real AWS permanecem pendentes.
-
-## Pré-requisitos e execução
-
-Para compilar esta entrega, usar .NET SDK 10.0.402, fixado em global.json sem roll-forward automático. auth-ci e auth-publish instalam essa mesma versão a partir do arquivo, evitando recompilar um commit com SDK diferente após uma atualização. Usar o pacote GerenciamentoMecanica.Auth.Contracts 1.0.0 no feed local artifacts/auth-contracts. Os comandos abaixo partem da raiz do repositório e pressupõem o pacote já obtido e validado pelo procedimento de consumo. Restore/build/publish e testes unitários não precisam de banco ativo nem de configuração AWS/JWT. Os testes de integração exigem Docker Desktop com engine Linux ativo; Testcontainers obtém postgres:16.15, cria um banco local descartável e o remove ao final. Esses testes usam credenciais fictícias, sem acesso AWS/RDS, e não são ignorados quando Docker está indisponível.
-
-Executar com as ferramentas padrão do .NET:
-
-```powershell
-dotnet restore GerenciamentoMecanicaAutenticacao.slnx
-dotnet build GerenciamentoMecanicaAutenticacao.slnx -c Release --no-restore
-dotnet test GerenciamentoMecanicaAutenticacao.slnx -c Release --no-build --no-restore
-dotnet restore Function/Function.csproj -r linux-x64
-dotnet publish Function/Function.csproj -c Release -r linux-x64 --self-contained false --no-restore -o artifacts/publish/function-linux-x64
-```
-
-O publish gera o handler e suas dependências para o runtime gerenciado dotnet10/x86_64, incluindo runtimeconfig.json e Certificates/rds-ca.pem; não publica recursos na AWS nem cria um endpoint público. Não há dependência de checkout da API. O login interno permanece em POST /authentication na [API da oficina](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
-
-## Inicialização e conexão — parte 2
-
-[FunctionBootstrap](Function/FunctionBootstrap.cs) expõe InitializeAsync com cancelamento. Construir o bootstrap não cria clientes nem acessa AWS; chamar InitializeAsync realiza o carregamento e retorna um FunctionRuntime com configuração JWT e NpgsqlDataSource. Não existe inicializador estático; FunctionHandler solicita o bootstrap assincronamente na primeira chamada com corpo HTTP válido.
-
-As variáveis obrigatórias são Runtime__Environment=hom|prd e AWS_REGION=us-east-1. Ausência, vazio ou valor diferente interrompe a inicialização antes de criar os clientes AWS. Tanto a futura Lambda quanto uma execução local usarão o mesmo caminho AWS, sem appsettings com chave/senha nem modo local alternativo. O SDK usa a cadeia padrão de credenciais: perfil/sessão compatível localmente e role da futura Lambda, sem chaves no código.
-
-O [carregador](Infrastructure/Configuration/AwsRuntimeConfigurationLoader.cs) recebe clientes AWS pelo construtor. Consulta uma vez os nove parâmetros String públicos com GetParameters e WithDecryption=false:
-
-| Prefixo | Campos |
-|---|---|
-| /mecanica/<ambiente>/base/v2/ | jwt-secret-arn, jwt-issuer, jwt-audience |
-| /mecanica/<ambiente>/database/v2/ | endpoint, port, database-name, auth-secret-arn, auth-db-user, ssl-mode |
-
-Busca somente AWSCURRENT dos Secrets JWT e database/auth. Os ARNs devem corresponder à conta 121754142617, região us-east-1 e ambiente escolhido; nenhum Secret administrativo, database/api ou JWT de outro ambiente é aceito. JWT fornece key com pelo menos 32 caracteres; o Secret do banco fornece username=mecanica_auth e password preenchido. Endpoint, porta e database vêm do SSM, ignorando host/port/dbname antigos do Secret. Parâmetros e campos inválidos impedem a criação do contexto; nenhuma configuração parcial é publicada.
-
-A leitura completa tem prazo de oito segundos, com cancelamento externo e retry Standard de duas novas tentativas por operação. Erros não preservam respostas AWS, JSON, chave, senha, string de conexão ou exceções internas. A configuração tipada usa classes que não imprimem seus campos em ToString. O prazo de oito segundos é o limite da leitura. O handler realiza essa leitura durante a primeira invocação com corpo válido, não na fase Init; o prazo total é limitado pelo tempo restante da invocação menos um segundo para resposta. A implantação futura deverá medir o comportamento com o timeout de quinze segundos previsto.
-
-A conexão usa Npgsql 10.0.2, NpgsqlConnectionStringBuilder, TLS VerifyFull, GssEncryptionMode=Disable, Pooling=false, timeout de conexão e de comando de cinco segundos. O certificado público [rds-ca.pem](Infrastructure/Certificates/rds-ca.pem) é o mesmo usado pelo banco e é copiado para Certificates/rds-ca.pem no build/publish. Sua ausência interrompe o carregamento; manter a CA atualizada quando a configuração do RDS mudar.
-
-Inicializar o contexto ou criar o data source não abre conexão. FunctionRuntimeProvider inicializa uma vez por instância do handler e reutiliza o FunctionRuntime, sem novas leituras AWS por operação depois do sucesso. O adaptador de consulta já usa Database.OpenConnectionAsync com cancelamento e await using para encerrar a conexão inclusive em erro. FunctionRuntime implementa IDisposable/IAsyncDisposable e descarta seu data source; o bootstrap descarta os clientes AWS no sucesso e em falha. Uma mudança de Secret/configuração exige nova inicialização do contexto, sem recarga automática.
-
-InfrastructureTests valida carregamento hom/prd, erros, cancelamento/prazo, mensagens sem segredos, parâmetros, AWSCURRENT, conexão preparada e descarte. Os testes não consultam AWS nem abrem conexão com RDS. Conseguir ler SSM/Secrets localmente não fornece acesso de rede ao RDS privado; IAM, rede e conexão real TLS serão conferidos após a entrega de infraestrutura/deploy. Não há inicialização de schema, seeds, grants ou usuário no código da aplicação.
-
-## Fluxo interno de autenticação — parte 3
-
-FunctionRuntime.Authentication expõe [ValidateCustomerDocumentUseCase](Application/Authentication/ValidateCustomerDocumentUseCase.cs), com ExecuteAsync(document, cancellationToken). O resultado interno distingue InvalidDocument, NotEligible e Authenticated. Somente Authenticated contém token, e o objeto de resultado não o imprime em ToString. O handler mapeia os resultados para 400, 401 e 200 com token como string JSON, respectivamente.
-
-A sequência é cancelamento, validação/normalização do documento, consulta do cadastro, elegibilidade e emissão. Documento inválido não consulta o banco; cadastro ausente ou Inactive não emite token. Falhas SQL, corrupção de dados e cancelamento propagam como falhas técnicas, sem serem convertidos em 400/401. Não são registrados documento, token, senha ou string de conexão.
-
-O [normalizador](Infrastructure/Documents/CustomerDocumentNormalizer.cs) aceita somente CPF ASCII de 11 dígitos ou máscara XXX.XXX.XXX-XX e CNPJ numérico ASCII de 14 dígitos ou máscara XX.XXX.XXX/XXXX-XX. Rejeita espaços, letras, caracteres extras e máscaras incorretas antes de delegar os dígitos verificadores/canonização a DocumentRules. Preserva as sequências repetidas aceitas pelo pacote; não adiciona suporte a CNPJ alfanumérico nem altera o pacote compartilhado.
-
-CustomerIdentity contém ID, nome, documento canônico e CustomerStatus Active/Inactive. Identidade vazia, nome/documento inválido ou status desconhecido não podem originar token. O [adaptador PostgreSQL](Infrastructure/Persistence/PostgreSqlCustomerLookup.cs) usa Dapper 2.1.79 e SQL fixo, selecionando somente id, name, document e status de public.customers pelo parâmetro Document. Não consulta telefone/email, não filtra Inactive no SQL e não escreve dados. QuerySingleOrDefaultAsync rejeita resultados múltiplos; status desconhecido ou cadastro corrompido são falhas técnicas. A conexão e o comando aceitam cancelamento, o comando tem timeout de cinco segundos e a conexão é descartada inclusive em erro.
-
-O [emissor JWT](Infrastructure/Authentication/CustomerTokenIssuer.cs) delega ao JwtIssuer do pacote fixado em [1.0.0]. ID/nome vêm do cadastro, role é sempre Customer e issuer/audience/chave vêm da configuração inicial. A expiração é UTC + dez minutos, com HS256, Name, Role e NameIdentifier. Nenhuma entrada escolhe ID, role, issuer, audience ou expiração; não há refresh token ou sessão persistida. O emissor aceita TimeProvider para testes.
-
-ApplicationTests usa dependências substituídas para testar o caso de uso. InfrastructureTests testa documentos, tokens reais e uma fixture PostgreSQL 16.15 em Docker, com mecanica_auth limitado às quatro colunas. Verifica SQL parametrizado, status/cadastro inválido, duplicatas, cancelamento, timeout, fechamento das conexões e proibição de leitura de telefone/email ou escrita. A fixture cria somente dados/schema de teste em C#, sem copiar Init.sql nem criar scripts. Conexão sem TLS é exclusiva da fixture local; não muda o TLS VerifyFull de produção e não comprova IAM/rede/CA do RDS. ContractTests permanece independente.
-
-## Handler Lambda e ciclo de vida — parte 4
-
-[FunctionHandler](Function/FunctionHandler.cs) recebe APIGatewayProxyRequest/ILambdaContext e devolve APIGatewayProxyResponse na integração proxy da REST API, com DefaultLambdaJsonSerializer aplicado ao método. O identificador para a futura configuração SAM da Lambda é:
-
-```text
-GerenciamentoMecanica.Autenticacao.Function::GerenciamentoMecanica.Autenticacao.Function.FunctionHandler::HandleAsync
-```
-
-A criação do handler não acessa AWS. O parser exige application/json, com charset UTF-8 opcional e nomes de cabeçalhos sem distinção de maiúsculas. Aceita somente um campo chamado document, em string não vazia; rejeita propriedades extras/duplicadas, nomes diferentes, JSON inválido e outros tipos. Body em Base64 é decodificado com UTF-8 estrito. Erros de parsing retornam 400 antes de inicializar o contexto ou consultar o banco. Validação dos formatos/dígitos CPF/CNPJ continua no caso de uso; um corpo válido pode iniciar o runtime mesmo quando o documento for posteriormente rejeitado.
-
-FunctionRuntimeProvider serializa a criação do contexto e guarda somente o sucesso. Uma falha retorna 500 e permite nova tentativa na próxima chamada válida; um contexto saudável não relê SSM/Secrets. Alteração de configuração/chave requer nova instância da função. O data source é reutilizado como fábrica, sem pooling e sem conexão aberta no bootstrap. A consulta abre/fecha sua própria conexão; o handler não descarta o runtime por requisição.
-
-HandleAsync reserva um segundo do RemainingTime para a resposta e propaga cancelamento à leitura AWS e à consulta. Configuração mantém prazo de oito segundos, conexão e comando mantêm cinco segundos cada, sujeitos ao prazo total da invocação. Falhas técnicas e cancelamentos retornam 500 genérico, sem fallback. O handler implementa IDisposable/IAsyncDisposable; testes/execução local devem descartá-lo após encerrar suas chamadas. Na Lambda, sua vida acompanha a instância do ambiente de execução; não há garantia de callback de descarte no encerramento da AWS.
-
-200 usa application/json e token como string JSON, sem envelope. 400/401/500 usam application/problem+json com type=about:blank, title/status/detail fixos e instance=/customers/validate. Cadastro inexistente e Inactive retornam exatamente a mesma resposta 401. Todas as respostas incluem Cache-Control: no-store e isBase64Encoded=false. Bearer recebido não dispensa a consulta; não há requisito de token prévio.
-
-Logs JSON incluem somente lambdaRequestId, gatewayRequestId, status, durationMs e category. Não incluem documento, corpo, JWT, chave, senha, configuração, string de conexão ou mensagem/stack trace de exceções. A observabilidade/tracing completa permanece para E5; nenhuma configuração CloudWatch/New Relic foi criada nesta parte.
-
-[contracts/openapi.json](contracts/openapi.json) é OpenAPI 3.0 estático com additionalProperties=false e respostas 200/400/401/500. A definição não contém URL de ambiente, ARN ou extensão AWS; publicação e composição do Gateway virão posteriormente. Respostas 5xx produzidas pelo próprio Gateway/runtime podem diferir dos erros tratados pelo handler. CI e publicação não executam lint do OpenAPI; o documento permanece versionado e é publicado com checksum. FunctionTests cobre parsing, respostas, serialização REST proxy, prazos e logs. InfrastructureTests acrescenta handler → PostgreSQL local → JWT, reutilização do contexto, retry após falha inicial, descarte e cancelamento da leitura AWS simulada/SQL. Não comprova rede, IAM ou TLS do RDS real. E3.1/E3.2/E2.12 permanecem abertas até implantação e integração AWS.
 ## Consumo do Auth.Contracts
 
-ContractTests e Infrastructure fixam o pacote em [1.0.0], sem referência ao projeto da API. NuGet.Config reserva seu ID ao feed local artifacts/auth-contracts. CI/publicação usam AWS CLI para baixar nupkg e sidecar do S3, conferem o SHA-256 publicado b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9 e separam o cache pelo hash. Os scripts PowerShell de download/teste foram removidos; a suíte .NET foi preservada.
-
-Para uso local, com AWS CLI autenticada e permissão de leitura do pacote:
+Infrastructure/ContractTests usam versão exata [1.0.0], sem checkout da API. NuGet.Config reserva o ID ao feed artifacts/auth-contracts. Na raiz, com AWS CLI autenticada e leitura autorizada do pacote:
 
 ```powershell
 New-Item -ItemType Directory -Force artifacts/auth-contracts
-aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 --key packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg --expected-bucket-owner 121754142617 artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
-aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 --key packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256 --expected-bucket-owner 121754142617 artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256
+aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 --expected-bucket-owner 121754142617 --key packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg
+aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 --expected-bucket-owner 121754142617 --key packages/GerenciamentoMecanica.Auth.Contracts/1.0.0/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256 artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256
 Get-FileHash artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg -Algorithm SHA256
 Get-Content artifacts/auth-contracts/GerenciamentoMecanica.Auth.Contracts.1.0.0.nupkg.sha256
 $env:NUGET_PACKAGES = Join-Path (Get-Location) artifacts/nuget/b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9
 ```
 
-Conferir que ambos os hashes correspondem exatamente à referência acima antes do restore. Pacote local antigo da mesma versão exige cache separado. O [procedimento](docs/DEPLOY.md) descreve roles, CI e artefatos imutáveis.
+Conferir os dois hashes contra b9080cea9d303722ac072e89421505d728126cdb52d57549da4328b1e18ab4e9 **antes do restore**. CI faz a comparação automaticamente e separa cache pelo hash. Não há scripts consumidores Get-AuthContracts/Test-AuthContracts no fluxo atual. [Produção/versionamento](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/PACOTE_AUTH_CONTRACTS.md).
 
-O pacote oferece DocumentRules para identificar/validar CPF ou CNPJ numérico e CpfRules/CnpjRules para usos específicos, preservando os cálculos do legado. O campo document aceita os dois formatos, com ou sem máscara. O fluxo interno já valida o formato estrito do documento, consulta clientes/status e emite a partir da identidade do cadastro. Parsing/validação do corpo HTTP estão implementados na Function. Os testes de contrato do pacote permanecem independentes; os demais projetos testam o fluxo e o handler, inclusive com PostgreSQL local.
+## Build, testes e publish locais
 
-Procedimento do produtor e regras de versionamento: [operação do pacote](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/PACOTE_AUTH_CONTRACTS.md). Publicação do pacote independe de deploy da API/RDS; os ambientes reutilizam a mesma versão imutável.
+SDK 10.0.402 fixado em [global.json](global.json), sem roll-forward. Docker Linux deve estar ativo para PostgreSQL/Testcontainers; não iniciar automaticamente nem ignorar testes indisponíveis. Os testes usam bootstrap/AWS simulados e PostgreSQL descartável, sem RDS/AWS reais.
 
-## Infraestrutura SAM e workflows
+```powershell
+dotnet restore GerenciamentoMecanicaServerless.slnx
+dotnet build GerenciamentoMecanicaServerless.slnx -c Release --no-restore
+dotnet test GerenciamentoMecanicaServerless.slnx -c Release --no-build --no-restore
+dotnet restore AuthFunction/AuthFunction.csproj -r linux-x64
+dotnet publish AuthFunction/AuthFunction.csproj -c Release -r linux-x64 --self-contained false --no-restore -o artifacts/publish/function-linux-x64
+sam validate --lint --template-file templates/auth.yaml --region us-east-1
+sam build --template-file templates/auth.yaml
+```
 
-[template.yaml](template.yaml) mantém .NET 10/x86_64, 512 MB, timeout quinze segundos, sem concorrência reservada ou provisionada, usando a capacidade compartilhada da conta e logs JSON/sete dias. Reutiliza duas subnets privadas, SG da base e role persistente; administra somente função/versão/alias, logs, duas saídas do SG e seis parâmetros auth/v2. Não cria IAM, Gateway ou Function URL e não contém valores de Secrets.
+Publish local não implanta recursos. Conferir DLL/deps/runtimeconfig, Certificates/rds-ca.pem e Observability/observability.json/collector.yaml. Testes do handler são a execução integrada local, sem criar servidor/executável próprio. [Roteiro e resultados AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Testes automatizados de transporte/Collector/telemetria da Lambda foram removidos por decisão; testes funcionais e MeterListener de integrações permanecem.
 
-| Workflow | Fluxo |
-|---|---|
-| auth-ci | PR/manual: pacote, testes .NET/PostgreSQL, SAM lint e actionlint |
-| auth-publish | Manual: testar/build SAM → upload nativo ZIP e contratos |
-| auth-provision | Manual: validar artefatos/rede → sam deploy direto, sem aprovação intermediária |
-| auth-destroy | Manual: sam delete, removendo stack/templates operacionais e preservando o ZIP versionado, sem aprovação intermediária |
+## Inicialização e persistência
 
-Publicação e provisionamento são separados. O SHA da publicação fixa código/template; artifact_commit escolhe esse conjunto no deploy. O disparo manual autoriza todo o provisionamento ou descarte, cada um em um job e sem Environment de aprovação. SAM cria/executa as alterações e aguarda o deploy; destroy recebe somente ambiente. Deploy e descarte usam somente SAM, sem comandos CloudFormation diretos. sam delete remove os recursos da stack e os templates operacionais em sam/auth/<ambiente>/changesets; preserva contratos, bucket, IAM persistente e SG da base. No SAM CLI 1.167.0, CodeUri objeto preserva também o ZIP versionado. Templates antigos com CodeUri string seguem a limpeza anterior da chave corrente, sem excluir versões históricas. A versão fixada permite recriar o deploy sem republicar somente para restaurar a chave corrente.
+Runtime__Environment=hom|prd e AWS_REGION=us-east-1 são obrigatórios ao inicializar autenticação real. Ausente/vazio/inválido falha, sem appsettings de banco/JWT ou alternativa local. O SDK usa a cadeia padrão de credenciais. Construir o handler/bootstrap não lê a configuração de autenticação; a primeira chamada de corpo válido pede o runtime. Observabilidade pode ser criada antes dessa leitura.
 
-ZIP usa sam/auth/<ambiente>/<commit>/ com deduplicação SAM/versionamento. O template publicado fixa CodeUri como Bucket/Key/Version; auth-provision consulta e implanta essa versão S3, mesmo que a chave tenha uma versão corrente diferente ou um marcador de exclusão. Republicação do mesmo commit conserva o VersionId original somente se os bytes do ZIP forem idênticos. Templates antigos sem Version exigem publicação de um commit novo. Template empacotado e OpenAPI permanecem imutáveis em contracts/auth/<commit>/, com checksum e gravação condicional. A chave do ZIP continua gravável; a referência versionada torna sua seleção estável, sem prometer gravação única. A pipeline não lê Secrets; o runtime continua resolvendo SSM/JWT/credencial auth na inicialização.
+SSM String/WithDecryption=false fornece nove campos: jwt-secret-arn/issuer/audience em base/v2 e endpoint/port/database-name/auth-secret-arn/auth-db-user/ssl-mode em database/v2. AWSCURRENT fornece JWT e credencial mecanica_auth; não usa Secret administrativo/database-api. Os valores ficam em memória e a inicialização bem-sucedida é reutilizada por handler. Falha não é armazenada como sucesso e permite nova tentativa; mudanças de Secret exigem nova inicialização.
 
-[Procedimento completo](docs/DEPLOY.md): GitHub, bootstrap, quota, publicação, rede, deploy SAM, falhas/rollback e descarte/ENIs. Primeira implantação em hom pelo mantenedor, depois de bootstrap aprovado e dependências provisionadas; sem aprovação adicional no workflow auth.
-## Contratos de integração
+Leitura AWS tem prazo de oito segundos e retries Standard existentes. Handler reserva um segundo do RemainingTime para resposta. Conexão/comando têm cinco segundos cada, sujeitos ao prazo total. NpgsqlDataSource é fábrica reutilizável, Pooling=false/TLS VerifyFull/GssEncryptionMode=Disable; cada lookup abre e descarta conexão inclusive em erro/cancelamento. CA pública está em [Infrastructure/Certificates/rds-ca.pem](Infrastructure/Certificates/rds-ca.pem).
 
-A [especificação central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) define a interface auth. O [contrato HTTP/JWT](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/ACESSO_E_AUTENTICACAO.md) define payloads, códigos e claims. Handler/SAM/workflows validados localmente; IAM runtime aplicado no bootstrap, bootstrap CI/SAM aplicado e conferido em 2026-10-11; publicação/deploy/validação real da Lambda pendentes.
+SQL fixo parametrizado pelo documento canônico seleciona somente id/name/document/status de customers; não consulta orders; consulta sem resultado/Inactive não é falha de banco. Dados corrompidos/status desconhecido/duplicatas são técnicos. Handler implementa descarte explícito para testes/local; a AWS não garante callback de descarte ao encerrar o ambiente de execução.
 
-| Interface | Responsabilidade da autenticação |
-|---|---|
-| Consome no build | NuGet GerenciamentoMecanica.Auth.Contracts em versão exata e checksum; baixar do S3 para feed local antes do restore |
-| Consome da base | VPC/subnets privadas/SG, JWT por ARN, issuer/audience e configuração New Relic quando habilitada |
-| Consome do banco | Endpoint/porta/database/TLS, schema-version/hash e auth-secret-arn |
-| Resolve no runtime | Credencial de leitura de clientes, chave JWT e ingestão New Relic; não usa a credencial de escrita da API |
-| Publica artefatos | ZIP nativo em sam/auth/<ambiente>/<commit>/; sam-<ambiente>.json/OpenAPI/checksums em contracts/auth/<commit>/ |
-| Publica em SSM | CloudFormation administra /mecanica/<ambiente>/auth/v2/: function-name, function-version numérica, invocation-arn qualificado, zip-key nativo SAM, openapi-key e auth-contracts-version=1.0.0; sem releases/tentativas |
-| Solicita após deploy | Plano e aprovação manual do Gateway com contratos fixos da API e da função |
+## Observabilidade
 
-O build não depende de checkout local da API nem de RDS ativo; depende da versão do pacote já publicada. A publicação do pacote pela API também não depende desta função, evitando ciclo de bootstrap.
+[Manifesto](AuthFunction/Observability/observability.json) configura regras/allowlists/filas e mensagens. SAM fixa OTel, X-Ray e New Relic sempre ativos; sem toggles de workflow. Uma linha JSON técnica por conclusão, com status/categoria/duração/IDs, mais TraceId/SpanId quando habilitado. Sem documento, token, payload, mensagem original ou stack trace.
 
-A validação operacional exige atualização Lambda concluída, versão numérica publicada, conectividade e testes de contrato aprovados. Gateway consome o ARN qualificado dessa versão, não $LATEST, e é dono da permissão de invocação. Não é necessário ter Gateway disponível para publicar a configuração v2 da função.
+Somente W3C traceparent seleciona pai OTLP; runtime/cabeçalho X-Ray não são pais da aplicação. Invocação → PostgreSQL e logs correlacionados; AlwaysOn coleta mesmo com pai não amostrado. Baggage/tracestate descartados. X-Ray/polling segue diagnóstico independente, sem árvore unificada prometida.
 
-Os workflows manuais conferem develop/hom ou main/prd no início e usam OIDC com conta restrita; IAM controla a confiança e permissões. Região e buckets são definidos nos arquivos, sem comparações repetidas de strings. Consulte o [procedimento](docs/DEPLOY.md); autenticação e metadados não substituem validação funcional da Lambda/RDS.
+Layer Collector 0.22.0 (Collector 0.151.0) recebe OTLP em loopback e usa decouple, sem batch periódico adicional. Flush da aplicação compartilha até 500 ms entre sinais e preserva ao menos 500 ms para resposta. Filas limitadas/freeze/encerramento podem perder dados; sem entrega única/replay. Extensão lê License Key do Secrets Manager pela mesma role da função, sem chave em ZIP/variáveis/pipeline.
 
-## Desenvolvimento e ambientes
+Mecanica.Auth mede solicitações de código e confirmações/duração por resultado (incluindo code-requested/rate-limited); seu total não é número de logins, que requer outcome=authenticated; Mecanica.Integrations mede acessos PostgreSQL/SSM/Secrets, separando operação/finalidade/resultado. Uma chamada lógica AWS é contada depois dos retries internos, não por tentativa de transporte. [Procedimento](docs/OBSERVABILIDADE_LOCAL.md), [integrações](docs/METRICAS_INTEGRACOES.md) e [limites aceitos E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md).
 
-Todo trabalho parte da `develop` atualizada, com branch de tarefa e PR para `develop`. A promoção `develop -> main` ocorrerá ao concluir a entrega. **hom** e **prd** terão funções e configurações próprias, compatíveis com API e banco do mesmo ambiente; essa separação ainda será provisionada.
+## Workflows, artefatos e operação AWS
 
-## Referências
+| Auth | Email | Fluxo compartilhado |
+|---|---|---|
+| [auth-ci](.github/workflows/auth-ci.yml) | [email-ci](.github/workflows/email-ci.yml) | PR/manual: solução completa, ambos SAMs, actionlint |
+| [auth-publish](.github/workflows/auth-publish.yml) | [email-publish](.github/workflows/email-publish.yml) | Manual: testes/build SAM → ZIP/template/checksum imutável; OpenAPI somente auth |
+| [auth-provision](.github/workflows/auth-provision.yml) | [email-provision](.github/workflows/email-provision.yml) | Manual: environment/artifact_commit, rede/dependências/VersionId → deploy SAM |
+| [auth-destroy](.github/workflows/auth-destroy.yml) | [email-destroy](.github/workflows/email-destroy.yml) | Manual: consumidores ausentes → sam delete → ENIs/egress ausentes |
 
-- [Arquitetura de execução](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/001-EXECUCAO.md).
-- [Entrega e contratos entre componentes](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/002-ENTREGA.md).
-- [Dados e observabilidade](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/rfcs/003-DADOS-E-OBSERVABILIDADE.md).
-- [Infraestrutura](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/tree/develop).
-- [Banco](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/tree/develop).
+Wrappers fixam componente; quatro reusable-*.yml concentram etapas comuns com allowlists. Develop/hom e main/prd, OIDC e filas por componente/ambiente; sem aprovação adicional. Required checks configuration/dotnet preservados como gates finais do auth-ci, abrangendo também EmailFunction e seu SAM. Role CI somente leitura do pacote; Environment AWS_ROLE_ARN para auth e **AWS_EMAIL_ROLE_ARN** para email. Ver [AE.8: pré-requisitos, artefatos, permissões e limites](docs/AE8_WORKFLOWS_E_GATEWAY.md).
 
-A reformulação declarativa mantém os testes de negócio e o consumo imutável de Auth.Contracts. A infraestrutura da função continuará consumindo `/mecanica/<ambiente>/base/v2/` e `/mecanica/<ambiente>/database/v2/`, resolvendo `auth-secret-arn` sem usuário administrativo. SSM é configuração, sem atestar prontidão. [ADR 008](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/adrs/008-INFRAESTRUTURA-DECLARATIVA.md).
+Auth usa SG da base e role persistente do bootstrap. Stack administra função/versões/alias/logs, egress TCP 5432/443 e seis campos auth/v2. Gateway consome versão numérica, não alias live/$LATEST; cada nova versão precisa de atualização Gateway.
 
-## Preparação JWT — E2.12
+ZIP usa chave nativa sam/auth/ambiente/commit e bucket versionado. Template imutável fixa **Bucket/Key/Version** antes do checksum. Republicação idêntica conserva VersionId original após comparar ZIP/template; divergência ou template antigo sem Version exige commit novo. Provision confere a versão exata e SAM usa Code.S3ObjectVersion. A chave é gravável, mas nova versão corrente não altera a seleção publicada.
 
-Infraestrutura JWT da base e consumo pela API entregues e validados em hom em 2026-10-08. O ciclo completo de descarte foi confirmado pelo mantenedor em 2026-10-09; recriar base/banco antes da futura validação AWS da função. Carregamento JWT da autenticação implementado e testado localmente; emissão JWT do fluxo interno também testada localmente; integração ao handler Lambda entregue e testada localmente; comprovação real em hom/prd permanece pendente. Consumir /mecanica/<ambiente>/base/v2/jwt-secret-arn, jwt-issuer e jwt-audience. Secret /mecanica/<ambiente>/base/jwt é JSON com somente key; issuer mecanica-<ambiente>-auth e audience mecanica-<ambiente>-api, distintos entre hom/prd.
+No SAM CLI 1.167.0, CodeUri objeto preserva ZIP no sam delete; stack/templates operacionais são removidos. Contratos, artefatos de outras revisões, bucket, IAM e SG da base persistem. Auth-destroy exige Gateway/VPC Link ausentes e, ao final, ausência de ENIs/egress; pendência bloqueia sem exclusão manual/espera automática. Ordem: Gateway → API/auth → banco/email → base/SMTP4dev. Email-destroy checa API/auth antes de remover somente a stack email.
 
-A parte 5 define no bootstrap a role persistente com leitura somente de AWSCURRENT do JWT e da credencial auth do ambiente, além dos nove parâmetros públicos do carregador; sua aplicação no bootstrap foi concluída após plano aprovado em 2026-10-09. O bootstrap da Function já carrega configurações e AWSCURRENT pelo SDK .NET, mantém os valores em memória e impede a inicialização diante de leitura/configuração inválida, sem fallback local. A emissão interna usa JwtIssuer do pacote 1.0.0, com HS256, expiração de dez minutos, ID/nome do cadastro e role Customer. As opções de validação/tolerância de relógio da API permanecem iguais. Function continua sendo biblioteca com handler invocável; role de execução está aplicada no bootstrap; implantação Lambda permanece pendente. [Operação JWT](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/JWT_COMPARTILHADO.md).
+[Deploy/descarte completo](docs/DEPLOY.md) · [Contratos SSM](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) · [GitHub Actions](https://github.com/pknfelps/GerenciamentoMecanicaServerless/actions).
 
-## Observabilidade — E5
+O endpoint de negócio, quando provisionado, vem de /mecanica/ambiente/gateway/v2/endpoint, não de Function URL própria. Swagger/Postman pertencem à API e o contrato estático está neste repositório. Não há recurso AWS ativo a partir de exemplos/documentação; PR/publish/provision futuros ficam com o mantenedor.
 
-**Tracing W3C — decisão de 20/10/2026:** o manifesto aceita somente `Telemetry:Propagation:InboundFormats=[tracecontext]`. LambdaTracePropagator usa o propagador W3C oficial; não lê `_X_AMZN_TRACE_ID` nem usa o cabeçalho X-Ray como pai OTLP. Sem W3C válido, a invocação inicia trace próprio; saída W3C, baggage/tracestate descartados, providers/sampler/sanitização/flush preservados. X-Ray nativo e polling continuam independentes. A árvore única foi retirada do escopo pelo mantenedor, não declarada corrigida. [Comportamento e publicação](docs/OBSERVABILIDADE_LOCAL.md#tracing-w3c--decisão-vigente-de-20102026).
+## Refinamento extra — autenticação do cliente e envio centralizado
 
-Na Lambda implantada, OpenTelemetry, layer Collector e exportação New Relic são permanentes. O SAM fixa Telemetry__Enabled=true e os nomes/configurações públicas; não há parâmetros de ativação. O único YAML de produção é Function/Observability/collector.yaml, com leitura nativa da License Key no Secrets Manager. Sem chave em ambiente, ZIP, Git ou pipeline. O Compose permanece disponível para conferência manual. Todos os testes automatizados de telemetria da Lambda foram removidos por decisão do mantenedor; os testes funcionais de autenticação, configuração AWS simulada e PostgreSQL permanecem. A instrumentação de produção não foi alterada.
+**Decisão vigente de 22/10/2026; AE.6 implementada e validada localmente, publicação pendente.** O cliente solicitará um código em request-code e confirmará challengeId/code/document em verify-code. O código será enviado a SMTP4dev privado e consultado na ferramenta de captura, nunca devolvido no endpoint público ou gerado pelo mecânico. Depois, JWT Customer identifica o cliente e permite acessar suas próprias OSs; sem Authorizer/token por OS. Sem entrega real a caixas pessoais. Mensagens são efêmeras; desafios permanecem no PostgreSQL.
 
-auth-provision recebe somente environment e artifact_commit; consulta sempre a layer e metadados da credencial. É necessário aplicar bootstrap/cadastrar chave e publicar uma revisão nova antes de provisionar. Defaults/configuração local da aplicação não mudam: o SAM fornece o valor fixo habilitado na AWS.
+AE.2: solução GerenciamentoMecanicaServerless, AuthFunction/AuthFunctionTests e estrutura EmailFunction/EmailFunctionTests criadas; template auth em templates/auth.yaml. GitHub/raiz/remote renomeados em 22/10/2026; transição OIDC inicial aplicada, proteções/Environments conferidos e auth-ci do novo nome aprovado. Plano final de retirada da confiança antiga aprovado/aplicado, policies conferidas e Terraform posterior sem diferenças; AE.2 concluída. Handler/template email e fluxo auth foram preparados nas AE.5/AE.6; workflows/publicação permanecem nas AE.8/AE.10. LA.1 é somente histórico; AE.1 está consolidada.
 
-X-Ray fica permanentemente habilitado no SAM com Tracing: Active, assim como OpenTelemetry/New Relic; não há toggle de ativação. É necessário publicar uma nova revisão do template antes de provisionar; artefatos antigos serão rejeitados pelo workflow. Uma nova versão numérica precisa ser consumida pelo Gateway. [Cadastro, sequência, rotação e limites](https://github.com/pknfelps/GerenciamentoMecanicaInfraestrutura/blob/develop/docs/NEW_RELIC.md). A ingestão real, ciclo do decouple/congelamento e demais itens E5 continuam pendentes.
+API/auth invocarão somente a função de envio autorizada pelo IAM; essa função concentra SMTP e não acessa o banco/JWT. A API mantém titularidade/Active e regras da OS. A ordem de publicação/descarte e as permissões novas serão preparadas antes da ativação. A migração estrutural AE.2 não implementou o fluxo de código/e-mail; preservou as proteções GitHub e as permissões funcionais existentes.
 
-## Bloqueios no auth-destroy — 17/10/2026
+[Escopo neste repositório](docs/AUTENTICACAO_E_EMAIL_PLANEJADO.md) · [Plano extra AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) · [Histórico LA.1](docs/LA1_AUTHORIZER_ORCAMENTO_2026-10-22.md). Independente dos checklists oficiais E5/E6/E7.
 
-Antes de sam delete, o workflow exige ausência da REST API e do VPC Link mecanica-<ambiente>-gateway. Depois da remoção SAM, exige ausência de ENIs e regras de saída do SG reservado auth; o SG pertence à base e pode permanecer. Dependência presente ou consulta inválida/negada encerra com erro. Não há espera automática: aguardar a limpeza e repetir. Publicar primeiro as permissões adicionais do bootstrap. Sem novos inputs, workflows ou operações AWS nesta implementação. [Procedimento](docs/DEPLOY.md).
+[Contratos consolidados AE.1](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md): formatos, erros, limites dos desafios, envio v1, catálogos, rede e execução local. Somente documentação nesta etapa.
 
-## E5 — Métricas dos acessos às integrações
+## AE.2 — organização local
 
-O bootstrap e o lookup PostgreSQL recebem o componente Mecanica.Integrations da observabilidade existente. São acessos concluídos, não invocações HTTP. Provider, orçamento compartilhado de flush e sanitização permanecem preservados. Consulte [regras e validação](docs/METRICAS_INTEGRACOES.md). Comprovação implantada dos novos sinais permanece pendente.
+A solução GerenciamentoMecanicaServerless.slnx agora reúne AuthFunction/AuthFunctionTests e EmailFunction/EmailFunctionTests. Assembly/namespace/handler da autenticação foram preservados; nomes físicos, contrato atual e recursos AWS não mudaram. EmailFunction é somente estrutura, sem handler/envio/testes funcionais até AE.5. Template auth em templates/auth.yaml e configuração samconfig.auth.toml. Plano de transição OIDC aprovado/aplicado; GitHub, pasta raiz e remote já renomeados, com checkout preservado. Auth-ci do novo nome aprovado; plano final aprovado/aplicado, confiança antiga retirada e Terraform posterior sem diferenças. AE.2 concluída. [Procedimento AE.2](docs/MIGRACAO_AE2_SERVERLESS.md).
+
+
+AE.3 revisada: tabelas no Init.sql do banco vazio, sem migrations nem regras de negócio no DDL. Na futura request-code, consultar cliente antes de qualquer gravação; inexistente gera somente log técnico sanitizado e resposta genérica, sem persistir limite/desafio ou invocar envio. Limite de cliente elegível usa UUID, sem índice HMAC de documento. [Contrato vigente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md).
+
+## AE.3 — operações transacionais preparadas
+
+[Criação, ativação, invalidação e consumo em C#](docs/AE3_OPERACOES_TRANSACIONAIS.md) implementados como componentes separados do handler atual. Regras de estado/prazo/tentativas no domínio; transações Npgsql com locks por UUID e revalidação do cadastro. Cliente inexistente sem gravação; assinatura antes do commit; tentativas negativas persistidas e uma confirmação retornada nas chamadas concorrentes. Regressão local final com limpeza: 328 testes aprovados, sem falhas/ignorados. [Grants restritos preparados e validados localmente](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/blob/develop/docs/AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md); [limpeza implementada e validada](docs/AE3_LIMPEZA_EXPIRADOS.md), até 100 expirados por tabela após commit, sem retenção extra de 24 horas. AE.3 concluída no escopo local; ligação HTTP/Invoke na AE.6. Sem publicação AWS.
+
+## AE.5 — envio central preparado localmente
+
+[EmailFunction implementada e conferida](docs/AE5_EMAIL_FUNCTION.md): contrato v1 estrito, MailKit, deadline compartilhado de três segundos, logs sanitizados e SAM privado com alias/catálogo separados. Regressão: 419 testes aprovados, incluindo 91 novos. Primeira invocação pelo SAM capturou mensagem; falha SMTP tratada e caixa efêmera do Compose conferidas. Os recursos locais foram encerrados. API/AuthFunction ainda serão conectadas nas AE.7/AE.6; workflows/publicação e comprovação AWS permanecem pendentes.
+
+## AE.6 — autenticação por código concluída localmente
+
+[Implementação, testes e limites](docs/AE6_AUTENTICACAO_POR_CODIGO.md): duas rotas, store transacional integrado, Invoke v1 sem retry, descoberta email/v1, logs/spans fixos e 438 testes aprovados. Fluxo com PostgreSQL/SMTP4dev reais comprovado localmente, com bootstrap/Invoke AWS injetados. Pacotes/SAM conferidos, sem deploy. Próximo passo: AE.7, integração e regras Customer da API.
+
+[AE.7 da API concluída localmente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE7_API_ENVIO_E_ACESSO_CUSTOMER.md): transporte central e operações Customer conferidos, sem deploy. AE.8 está preparada localmente; AE.9 consolidou Postman/diagramas e a validação local conjunta; a próxima etapa é AE.10, publicação e validação AWS autorizadas.
+
+## AE.8 — publicação preparada
+
+[Workflows separados/reutilizáveis, Gateway e evidências locais](docs/AE8_WORKFLOWS_E_GATEWAY.md). EmailFunction continua privada; API/auth dependem do contrato email/v1. Nenhum workflow remoto ou deploy AWS executado nesta preparação.
+
+## AE.9 — comprovação conjunta local, 23/10/2026
+
+[Registro AE.9 e roteiro de publicação](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md): handler auth real com bootstrap injetado, PostgreSQL/Init.sql/grants reais, SDK Invoke real → SAM/EmailFunction → SMTP4dev e JWT aceito pela API real. Status antes do orçamento, Approved/Refused, titularidade/Inactive, falha SMTP e perda da caixa conferidos. **438 testes Serverless e 1.212 testes API aprovados**, zero falhas/ignorados na execução final. Nenhum código/token gravado em evidência; recursos descartáveis encerrados.
+
+[Postman atualizado](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/postman/README.md): duas rotas de código e sessão Customer para status/decisão, sem emissão pública de código. AE.9 concluída localmente; AE.10 exige PRs, bootstrap aprovado, AWS_EMAIL_ROLE_ARN, base/banco/email/API/auth/Gateway e validação integrada autorizada. Não foi executado workflow remoto ou acesso autenticado AWS nesta etapa.

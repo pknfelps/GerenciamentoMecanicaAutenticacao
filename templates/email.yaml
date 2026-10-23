@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+Description: Captura SMTP privada; rede e role runtime pertencem a base/bootstrap.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [hom, prd]
+  ArtifactCommit:
+    Type: String
+    AllowedPattern: '^[0-9a-f]{40}$'
+  WorkloadSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  EmailSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  NlbSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  SmtpHost:
+    Type: String
+    MinLength: 1
+    MaxLength: 253
+    Description: DNS do NLB interno resolvido pela pipeline no catalogo base/v2.
+  SmtpPort:
+    Type: Number
+    MinValue: 1
+    MaxValue: 65535
+    Description: Porta SMTP resolvida no catalogo base/v2; local usa a porta do container SMTP.
+  SenderName:
+    Type: String
+    Default: Mecânica
+    MaxLength: 100
+  SenderEmail:
+    Type: String
+    Default: noreply@mecanica.local
+    MaxLength: 254
+  ZipKey:
+    Type: String
+    AllowedPattern: '^sam/email/(hom|prd)/.+$'
+
+Resources:
+  EmailLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/mecanica-${Environment}-email'
+      RetentionInDays: 7
+
+  SmtpEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EmailSecurityGroupId
+      DestinationSecurityGroupId: !Ref NlbSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref SmtpPort
+      ToPort: !Ref SmtpPort
+      Description: Captura SMTP no NLB interno do ambiente
+
+  EmailFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: [SmtpEgress]
+    Properties:
+      FunctionName: !Sub 'mecanica-${Environment}-email'
+      Description: !Sub 'Captura SMTP de mensagens - ${ArtifactCommit}'
+      CodeUri: ../EmailFunction/
+      PackageType: Zip
+      Runtime: dotnet10
+      Architectures: [x86_64]
+      Handler: GerenciamentoMecanica.Serverless.EmailFunction::GerenciamentoMecanica.Serverless.EmailFunction.FunctionHandler::HandleAsync
+      Role: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mecanica-${Environment}-email-runtime'
+      VpcConfig:
+        SubnetIds: !Ref WorkloadSubnetIds
+        SecurityGroupIds: [!Ref EmailSecurityGroupId]
+      MemorySize: 512
+      Timeout: 6
+      AutoPublishAlias: live
+      AutoPublishAliasAllProperties: true
+      Environment:
+        Variables:
+          Runtime__Environment: !Ref Environment
+          Email__SmtpHost: !Ref SmtpHost
+          Email__SmtpPort: !Ref SmtpPort
+          Email__SenderName: !Ref SenderName
+          Email__SenderEmail: !Ref SenderEmail
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref EmailLogs
+        ApplicationLogLevel: INFO
+        SystemLogLevel: INFO
+      Tags:
+        Project: mecanica
+        Environment: !Ref Environment
+        Component: email
+        ManagedBy: CloudFormation
+
+  FunctionNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/mecanica/${Environment}/email/v1/function-name'
+      Type: String
+      Tier: Standard
+      Value: !Ref EmailFunction
+
+  FunctionVersionParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/mecanica/${Environment}/email/v1/function-version'
+      Type: String
+      Tier: Standard
+      Value: !GetAtt EmailFunction.Version.Version
+
+  InvocationArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/mecanica/${Environment}/email/v1/invocation-arn'
+      Type: String
+      Tier: Standard
+      Value: !Ref EmailFunction.Alias
+
+  ContractVersionParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/mecanica/${Environment}/email/v1/contract-version'
+      Type: String
+      Tier: Standard
+      Value: '1'
+
+  ZipKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/mecanica/${Environment}/email/v1/zip-key'
+      Type: String
+      Tier: Standard
+      Value: !Ref ZipKey
+
+Outputs:
+  FunctionName:
+    Value: !Ref EmailFunction
+  FunctionVersion:
+    Value: !GetAtt EmailFunction.Version.Version
+  InvocationArn:
+    Value: !Ref EmailFunction.Alias
+  ContractVersion:
+    Value: '1'
+  ZipKey:
+    Value: !Ref ZipKey

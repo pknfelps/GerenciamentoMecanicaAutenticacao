@@ -49,6 +49,14 @@ public sealed class AwsRuntimeConfigurationLoader(
             }, deadline.Token).WaitAsync(deadline.Token), cancellationToken);
 
             var values = ReadParameters(response, names);
+            var emailPrefix = $"/mecanica/{environment.Name}/email/v1/";
+            string[] emailNames = [emailPrefix + "invocation-arn", emailPrefix + "contract-version"];
+            var emailResponse = await IntegrationMetrics.MeasureAsync(metrics, "ssm", "get_parameters", "bootstrap",
+                () => parameters.GetParametersAsync(new GetParametersRequest
+                { Names = [.. emailNames], WithDecryption = false }, deadline.Token).WaitAsync(deadline.Token), cancellationToken);
+            var emailValues = ReadParameters(emailResponse, emailNames);
+            var email = EmailInvocationConfiguration.Parse(environment,
+                emailValues[emailNames[0]], emailValues[emailNames[1]]);
             var jwtArn = values[basePrefix + "jwt-secret-arn"];
             var databaseArn = values[databasePrefix + "auth-secret-arn"];
 
@@ -108,7 +116,7 @@ public sealed class AwsRuntimeConfigurationLoader(
 
             deadline.Token.ThrowIfCancellationRequested();
 
-            return new RuntimeConfiguration(jwt, new PostgreSqlConfiguration(connection));
+            return new RuntimeConfiguration(jwt, new PostgreSqlConfiguration(connection), email);
         }
         catch (ConfigurationValidationException exception)
         {

@@ -29,23 +29,6 @@ public sealed class PostgreSqlCustomerLookup(NpgsqlDataSource database, Integrat
         var row = await IntegrationMetrics.MeasureAsync(metrics, "postgresql", "command.execute", "application",
             () => connection.QuerySingleOrDefaultAsync<CustomerRow>(command), cancellationToken);
 
-        if (row is null)
-            return null;
-
-        var status = row.Status switch
-        {
-            "Active" => CustomerStatus.Active,
-            "Inactive" => CustomerStatus.Inactive,
-            _ => throw new InvalidDataException("Customer status in the database is invalid.")
-        };
-
-        try
-        {
-            return new CustomerIdentity(row.Id, row.Name!, row.Document!, status);
-        }
-        catch (ArgumentException)
-        {
-            throw new InvalidDataException("Customer identity in the database is invalid.");
-        }
+        return row?.ToIdentity();
     }
 }

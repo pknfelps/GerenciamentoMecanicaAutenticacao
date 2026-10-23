@@ -1,0 +1,217 @@
+name: reusable-provision
+on:
+  workflow_call:
+    inputs:
+      component:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      artifact_commit:
+        required: true
+        type: string
+permissions: {}
+defaults:
+  run:
+    shell: bash
+env:
+  COMPONENT: ${{ inputs.component }}
+  FUNCTION_RESOURCE: ${{ inputs.component == 'auth' && 'AuthFunction' || 'EmailFunction' }}
+  TARGET_ENVIRONMENT: ${{ inputs.environment }}
+  ARTIFACT_COMMIT: ${{ inputs.artifact_commit }}
+  STACK_NAME: mecanica-${{ inputs.environment }}-${{ inputs.component }}
+  AWS_REGION: us-east-1
+  AWS_PAGER: ''
+  SAM_CLI_TELEMETRY: '0'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check component and repository
+        env:
+          DEPLOY_ROLE_ARN: ${{ inputs.component == 'auth' && vars.AWS_ROLE_ARN || vars.AWS_EMAIL_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = pknfelps/GerenciamentoMecanicaServerless
+          case "$COMPONENT" in auth|email) ;; *) exit 1 ;; esac
+          test "$DEPLOY_ROLE_ARN" = "arn:aws:iam::121754142617:role/mecanica/pipelines/mecanica-$TARGET_ENVIRONMENT-$COMPONENT-github"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check branch and published revision
+        run: |
+          set -euo pipefail
+          case "$TARGET_ENVIRONMENT" in hom) branch=develop ;; prd) branch=main ;; *) exit 1 ;; esac
+          test "$GITHUB_REF" = "refs/heads/$branch"
+          [[ "$ARTIFACT_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor -- "$ARTIFACT_COMMIT" "$GITHUB_SHA"
+      - uses: aws-actions/setup-sam@f84ec7d548307efafe33230528756de3c5841a17 # v2
+        with:
+          version: '1.167.0'
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ inputs.component == 'auth' && vars.AWS_ROLE_ARN || vars.AWS_EMAIL_ROLE_ARN }}
+          allowed-account-ids: '121754142617'
+          role-session-name: ${{ inputs.component }}-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Read and verify published SAM template
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/deploy
+          for file in "sam-$TARGET_ENVIRONMENT.json" "sam-$TARGET_ENVIRONMENT.json.sha256"; do
+            aws s3api get-object --bucket mecanica-artifacts-121754142617-us-east-1 \
+              --expected-bucket-owner 121754142617 --key "contracts/$COMPONENT/$ARTIFACT_COMMIT/$file" \
+              "artifacts/deploy/$file" > /dev/null
+          done
+          template="artifacts/deploy/sam-$TARGET_ENVIRONMENT.json"
+          hash="$(cat "$template.sha256")"
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$hash" "$template" | sha256sum --check --strict
+          if [ "$COMPONENT" = auth ]; then
+            jq -e '.Resources.AuthFunction.Properties.Environment.Variables.Telemetry__Enabled == "true" and .Resources.AuthFunction.Properties.Tracing == "Active"' "$template" > /dev/null || {
+              echo '::error::Publique auth com OpenTelemetry, New Relic e X-Ray ativos.'; exit 1;
+            }
+          fi
+          jq -e '
+            [.Resources[] | select(.Type == "AWS::Serverless::Function")] | length == 1
+          ' "$template" > /dev/null
+          jq -e '
+            .Resources[env.FUNCTION_RESOURCE].Properties |
+            .Role == {"Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mecanica-${Environment}-" + env.COMPONENT + "-runtime"} and
+            .Runtime == "dotnet10" and .Architectures == ["x86_64"] and
+            .AutoPublishAlias == "live" and .AutoPublishAliasAllProperties == true
+          ' "$template" > /dev/null
+          jq -e '
+            .Resources[env.FUNCTION_RESOURCE].Properties.CodeUri |
+            type == "object" and .Bucket == "mecanica-artifacts-121754142617-us-east-1" and
+            (.Key | type == "string") and
+            (.Version | type == "string" and length > 0 and . != "null" and . != "None")
+          ' "$template" > /dev/null || {
+            echo '::error::Publique uma nova revisao SAM com Bucket, Key e Version do ZIP antes de provisionar.'
+            exit 1
+          }
+          zip_key="$(jq -er '.Resources[env.FUNCTION_RESOURCE].Properties.CodeUri.Key' "$template")"
+          zip_version="$(jq -er '.Resources[env.FUNCTION_RESOURCE].Properties.CodeUri.Version' "$template")"
+          case "$zip_key" in "sam/$COMPONENT/$TARGET_ENVIRONMENT/$ARTIFACT_COMMIT/"*) ;; *) exit 1 ;; esac
+          aws s3api head-object --bucket mecanica-artifacts-121754142617-us-east-1 \
+            --expected-bucket-owner 121754142617 --key "$zip_key" --version-id "$zip_version" \
+            --query '{Version:VersionId,Size:ContentLength}' --output json > "$RUNNER_TEMP/zip-metadata.json"
+          jq -e --arg version "$zip_version" '.Version == $version and .Size > 0' "$RUNNER_TEMP/zip-metadata.json" > /dev/null
+          {
+            echo "ZIP_KEY=$zip_key"
+            echo "ZIP_VERSION=$zip_version"
+          } >> "$GITHUB_ENV"
+      - name: Check Collector layer access
+        if: ${{ inputs.component == 'auth' }}
+        run: |
+          set -euo pipefail
+          layer_arn="$(jq -er '.Resources[env.FUNCTION_RESOURCE].Properties.Layers[0] | select(type == "string")' \
+            "artifacts/deploy/sam-$TARGET_ENVIRONMENT.json")"
+          aws lambda get-layer-version-by-arn --arn "$layer_arn" \
+            --query '{Arn:LayerVersionArn,Architectures:CompatibleArchitectures,CodeSize:Content.CodeSize}' --output json
+      - name: Read and check private network metadata
+        run: |
+          set -euo pipefail
+          names=("/mecanica/$TARGET_ENVIRONMENT/base/v2/vpc-id" "/mecanica/$TARGET_ENVIRONMENT/base/v2/workload-subnet-ids")
+          if [ "$COMPONENT" = auth ]; then
+            names+=("/mecanica/$TARGET_ENVIRONMENT/base/v2/auth-security-group-id" "/mecanica/$TARGET_ENVIRONMENT/database/v2/security-group-id")
+            group_field=auth-security-group-id
+            peer_field=security-group-id
+            peer_name="mecanica-$TARGET_ENVIRONMENT-postgres"
+          else
+            names+=("/mecanica/$TARGET_ENVIRONMENT/base/v2/email-security-group-id" "/mecanica/$TARGET_ENVIRONMENT/base/v2/nlb-security-group-id" "/mecanica/$TARGET_ENVIRONMENT/base/v2/smtp-host" "/mecanica/$TARGET_ENVIRONMENT/base/v2/smtp-port")
+            group_field=email-security-group-id
+            peer_field=nlb-security-group-id
+            peer_name="mecanica-$TARGET_ENVIRONMENT-nlb"
+          fi
+          aws ssm get-parameters --no-with-decryption --names "${names[@]}" > "$RUNNER_TEMP/network.json"
+          jq -e --argjson count "${#names[@]}" '.InvalidParameters == [] and (.Parameters | length == $count and all(.[]; .Type == "String" and (.Value | length > 0)))' "$RUNNER_TEMP/network.json" > /dev/null
+          vpc="$(jq -er '.Parameters[] | select(.Name | endswith("/vpc-id")) | .Value' "$RUNNER_TEMP/network.json")"
+          subnets="$(jq -er '.Parameters[] | select(.Name | endswith("/workload-subnet-ids")) | .Value' "$RUNNER_TEMP/network.json")"
+          group="$(jq -er --arg field "/$group_field" '.Parameters[] | select(.Name | endswith($field)) | .Value' "$RUNNER_TEMP/network.json")"
+          peer="$(jq -er --arg field "/$peer_field" '.Parameters[] | select(.Name | endswith($field)) | .Value' "$RUNNER_TEMP/network.json")"
+          jq -e 'type == "array" and length == 2 and (unique | length == 2) and all(.[]; test("^subnet-[0-9a-f]+$"))' <<< "$subnets" > /dev/null
+          aws ec2 describe-vpcs --vpc-ids "$vpc" > "$RUNNER_TEMP/vpc.json"
+          jq -e --arg environment "$TARGET_ENVIRONMENT" '.Vpcs | length == 1 and (.[0].Tags | any(.[]; .Key == "Project" and .Value == "mecanica") and any(.[]; .Key == "Environment" and .Value == $environment))' "$RUNNER_TEMP/vpc.json" > /dev/null
+          mapfile -t subnet_ids < <(jq -r '.[]' <<< "$subnets")
+          aws ec2 describe-subnets --subnet-ids "${subnet_ids[@]}" > "$RUNNER_TEMP/subnets.json"
+          jq -e --arg vpc "$vpc" '.Subnets | length == 2 and all(.[]; .VpcId == $vpc and .MapPublicIpOnLaunch == false) and ([.[].AvailabilityZone] | unique | length == 2)' "$RUNNER_TEMP/subnets.json" > /dev/null
+          aws ec2 describe-security-groups --group-ids "$group" "$peer" > "$RUNNER_TEMP/groups.json"
+          jq -e --arg vpc "$vpc" --arg own "mecanica-$TARGET_ENVIRONMENT-$COMPONENT" --arg peer "$peer_name" '.SecurityGroups | length == 2 and all(.[]; .VpcId == $vpc) and any(.[]; .GroupName == $own) and any(.[]; .GroupName == $peer)' "$RUNNER_TEMP/groups.json" > /dev/null
+          {
+            echo "WORKLOAD_SUBNET_IDS=$(jq -r 'join(",")' <<< "$subnets")"
+            echo "FUNCTION_SECURITY_GROUP_ID=$group"
+            echo "PEER_SECURITY_GROUP_ID=$peer"
+          } >> "$GITHUB_ENV"
+          if [ "$COMPONENT" = email ]; then
+            smtp_host="$(jq -er '.Parameters[] | select(.Name | endswith("/smtp-host")) | .Value' "$RUNNER_TEMP/network.json")"
+            smtp_port="$(jq -er '.Parameters[] | select(.Name | endswith("/smtp-port")) | .Value' "$RUNNER_TEMP/network.json")"
+            [[ "$smtp_host" =~ ^[a-zA-Z0-9-]+\.elb\.us-east-1\.amazonaws\.com$ ]]
+            test "$smtp_port" = 2525
+            printf 'SMTP_HOST=%s\nSMTP_PORT=%s\n' "$smtp_host" "$smtp_port" >> "$GITHUB_ENV"
+          fi
+      - name: Check email invocation contract
+        if: ${{ inputs.component == 'auth' }}
+        run: |
+          set -euo pipefail
+          aws ssm get-parameters --no-with-decryption --names \
+            "/mecanica/$TARGET_ENVIRONMENT/email/v1/invocation-arn" \
+            "/mecanica/$TARGET_ENVIRONMENT/email/v1/contract-version" > "$RUNNER_TEMP/email.json"
+          jq -e --arg arn "arn:aws:lambda:us-east-1:121754142617:function:mecanica-$TARGET_ENVIRONMENT-email:live" '
+            .InvalidParameters == [] and (.Parameters | length == 2 and all(.[]; .Type == "String") and
+            any(.[]; (.Name | endswith("/invocation-arn")) and .Value == $arn) and
+            any(.[]; (.Name | endswith("/contract-version")) and .Value == "1"))
+          ' "$RUNNER_TEMP/email.json" > /dev/null || { echo '::error::Conclua email-provision com contrato v1 antes de auth-provision.'; exit 1; }
+      - name: Check New Relic credential metadata
+        if: ${{ inputs.component == 'auth' }}
+        run: |
+          set -euo pipefail
+          secret="/mecanica/$TARGET_ENVIRONMENT/observability/newrelic-license-key"
+          aws secretsmanager describe-secret --secret-id "$secret" \
+            --query '{ARN:ARN,DeletedDate:DeletedDate}' --output json > "$RUNNER_TEMP/newrelic-secret.json"
+          jq -e '.DeletedDate == null' "$RUNNER_TEMP/newrelic-secret.json" > /dev/null
+          current="$(aws secretsmanager list-secret-version-ids --secret-id "$secret" \
+            --query "length(Versions[?contains(VersionStages, 'AWSCURRENT')])" --output text)"
+          test "$current" = 1 || { echo '::error::Cadastre a License Key no Secret do ambiente antes de provisionar.'; exit 1; }
+      - name: Deploy with SAM
+        run: |
+          set -euo pipefail
+          parameters=("Environment=$TARGET_ENVIRONMENT" "ArtifactCommit=$ARTIFACT_COMMIT" "WorkloadSubnetIds=$WORKLOAD_SUBNET_IDS" "ZipKey=$ZIP_KEY")
+          if [ "$COMPONENT" = auth ]; then
+            parameters+=("AuthSecurityGroupId=$FUNCTION_SECURITY_GROUP_ID" "DatabaseSecurityGroupId=$PEER_SECURITY_GROUP_ID")
+          else
+            parameters+=("EmailSecurityGroupId=$FUNCTION_SECURITY_GROUP_ID" "NlbSecurityGroupId=$PEER_SECURITY_GROUP_ID" "SmtpHost=$SMTP_HOST" "SmtpPort=$SMTP_PORT")
+          fi
+          sam deploy --config-env "$TARGET_ENVIRONMENT" --config-file "$GITHUB_WORKSPACE/samconfig.$COMPONENT.toml" \
+            --template-file "artifacts/deploy/sam-$TARGET_ENVIRONMENT.json" \
+            --parameter-overrides "${parameters[@]}" \
+            --no-confirm-changeset --no-fail-on-empty-changeset --no-progressbar \
+            | tee artifacts/deploy/sam-deploy.txt
+          aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].Outputs' --output json > artifacts/deploy/outputs.json
+          {
+            echo "SAM concluido: $STACK_NAME; ambiente: $TARGET_ENVIRONMENT; codigo/template: $ARTIFACT_COMMIT; workflow: $GITHUB_SHA."
+            echo "ZIP: $ZIP_KEY; S3 VersionId: $ZIP_VERSION."
+            echo 'Nome, versao e ARN de invocacao:'
+            jq -r '.[] | select(.OutputKey == "FunctionName" or .OutputKey == "FunctionVersion" or .OutputKey == "InvocationArn") | "- \(.OutputKey): \(.OutputValue)"' artifacts/deploy/outputs.json
+            if [ "$COMPONENT" = auth ]; then
+              echo 'OpenTelemetry/New Relic e X-Ray ativos; ingestao nao comprovada pelo workflow. Atualize o Gateway para esta versao numerica e contrato 2.0.0.'
+            else
+              echo 'Alias live/contrato v1 publicados; captura SMTP privada, sem entrega externa ou endpoint HTTP.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: ${{ inputs.component }}-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/deploy/
+          if-no-files-found: warn
+          retention-days: 7

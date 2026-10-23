@@ -1,0 +1,30 @@
+name: email-provision
+run-name: email-provision / ${{ inputs.environment }} / ${{ github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Develop/hom ou main/prd
+        required: true
+        default: hom
+        type: choice
+        options: [hom, prd]
+      artifact_commit:
+        description: SHA completo do codigo e template publicados
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: email-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  provision:
+    uses: ./.github/workflows/reusable-provision.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    with:
+      component: email
+      environment: ${{ inputs.environment }}
+      artifact_commit: ${{ inputs.artifact_commit }}

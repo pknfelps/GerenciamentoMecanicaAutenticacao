@@ -1,0 +1,17 @@
+name: email-ci
+on:
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: email-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  email-checks:
+    uses: ./.github/workflows/reusable-ci.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      component: email

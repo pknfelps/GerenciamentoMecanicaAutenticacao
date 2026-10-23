@@ -1,0 +1,25 @@
+name: email-publish
+run-name: email-publish / ${{ inputs.environment }} / ${{ github.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Develop/hom ou main/prd
+        required: true
+        default: hom
+        type: choice
+        options: [hom, prd]
+permissions: {}
+concurrency:
+  group: email-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    uses: ./.github/workflows/reusable-publish.yml
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    with:
+      component: email
+      environment: ${{ inputs.environment }}
