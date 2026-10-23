@@ -96,14 +96,21 @@ jobs:
             unexpected="$(find ".aws-sam/build/$FUNCTION_RESOURCE" \( -name 'Npgsql.dll' -o -name '*Autenticacao*.dll' -o -iname '*Tests.dll' \) -print -quit)"
             test -z "$unexpected"
           fi
+      - name: Archive SAM build with its directory structure
+        run: |
+          set -euo pipefail
+          test -s .aws-sam/build/template.yaml
+          paths=(.aws-sam/build)
+          if [ "$COMPONENT" = auth ]; then
+            test -s contracts/openapi.json
+            paths+=(contracts/openapi.json)
+          fi
+          tar -czf "$RUNNER_TEMP/function-build.tar.gz" "${paths[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: bundle
         with:
           name: ${{ inputs.component }}-build-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            .aws-sam/build/
-            ${{ inputs.component == 'auth' && 'contracts/openapi.json' || '' }}
-          include-hidden-files: true
+          path: ${{ runner.temp }}/function-build.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -143,6 +150,18 @@ jobs:
           artifact-ids: ${{ needs.package.outputs.artifact_id }}
           path: .
           merge-multiple: true
+      - name: Restore and check SAM build
+        run: |
+          set -euo pipefail
+          tar -xzf function-build.tar.gz
+          test -s .aws-sam/build/template.yaml || {
+            echo '::error::The downloaded artifact must contain .aws-sam/build/template.yaml.'
+            exit 1
+          }
+          test -s ".aws-sam/build/$FUNCTION_RESOURCE/$FUNCTION_ASSEMBLY.dll"
+          test -s ".aws-sam/build/$FUNCTION_RESOURCE/$FUNCTION_ASSEMBLY.deps.json"
+          test -s ".aws-sam/build/$FUNCTION_RESOURCE/$FUNCTION_ASSEMBLY.runtimeconfig.json"
+          if [ "$COMPONENT" = auth ]; then test -s contracts/openapi.json; fi
       - name: Package and upload Lambda with SAM
         run: |
           set -euo pipefail
