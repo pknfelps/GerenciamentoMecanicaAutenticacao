@@ -37,6 +37,8 @@ SAM package continua nativo. Depois, publica-se CodeUri como objeto **Bucket/Key
 
 Provision confere ancestralidade do artifact_commit, checksum, função/runtime/alias/role esperados e ZIP no prefixo ambiente/commit. HeadObject usa --version-id e exige a mesma versão/tamanho positivo. Aplica o template publicado; não recompila o código nem muda Version. Resumo registra revisão, chave/VersionId, nome/versão/ARN da função; não registra conteúdo de mensagens ou credenciais.
 
+**Compatibilidade jq em 23/10/2026:** a concatenação do ARN em `Fn::Sub` na validação de role do reusable-provision foi colocada entre parênteses. A expressão anterior compilava no jq 1.8.1 local, mas falhava no jq 1.7.1 com unexpected '+'. A expressão completa corrigida foi conferida nas duas versões sobre os templates SAM existentes de auth/email: aceita a role do componente e rejeita a role do outro, totalizando oito conferências. Actionlint 1.7.12 com ShellCheck 0.11.0 aprovado. Evidência local na API: artifacts/ae10/bootstrap/provision-jq-review.json. Sem alteração de IAM, templates, ZIPs ou código das funções; nenhum workflow remoto executado. Após publicar a correção, iniciar nova execução do provision na revisão atualizada, mantendo o artifact_commit já publicado e ancestral da branch; não é necessário repetir publish por esta correção.
+
 ## Pré-requisitos e configuração
 
 1. Aplicar bootstrap e base preparados nas AE.4/AE.8 somente por plano salvo aprovado. A base precisa ter SMTP4dev, listener privado e catálogo base/v2.

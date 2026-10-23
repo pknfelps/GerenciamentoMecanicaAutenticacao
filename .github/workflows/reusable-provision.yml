@@ -86,7 +86,10 @@ jobs:
           ' "$template" > /dev/null
           jq -e '
             .Resources[env.FUNCTION_RESOURCE].Properties |
-            .Role == {"Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mecanica-${Environment}-" + env.COMPONENT + "-runtime"} and
+            .Role == {"Fn::Sub": (
+              "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/mecanica-${Environment}-"
+              + env.COMPONENT + "-runtime"
+            )} and
             .Runtime == "dotnet10" and .Architectures == ["x86_64"] and
             .AutoPublishAlias == "live" and .AutoPublishAliasAllProperties == true
           ' "$template" > /dev/null
