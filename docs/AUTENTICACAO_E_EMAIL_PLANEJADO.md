@@ -88,3 +88,7 @@ Restore/build Release sem avisos/erros, 438 testes sem falhas/ignorados, publish
 ## AE.8 — preparação concluída localmente, 22/10/2026
 
 [Entradas e reutilizáveis auth/email, imutabilidade, dependências e Gateway](AE8_WORKFLOWS_E_GATEWAY.md). SAMs hom/prd, lint, Terraform e 438 testes aprovados. Proteções/identidade GitHub reconferidas em somente leitura; checks obrigatórios preservados. Sem workflow remoto ou aplicação AWS. Próxima etapa AE.9; publicação integrada permanece AE.10.
+
+## AE.9 — conjunto conferido localmente, 23/10/2026
+
+[Comprovação e documentos atuais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md). Postman/contratos/diagramas alinhados; 47 conferências manuais conjuntas e regressões de 438 Serverless/1.212 API aprovadas. Transporte real SDK/SAM/SMTP4dev; bootstrap auth injetado, sem fallback produtivo ou novo executável. OTP/JWT em memória; projeto descartável removido. Publicação/IAM/rede/runtime AWS continuam na AE.10; nenhum fluxo remoto foi executado.

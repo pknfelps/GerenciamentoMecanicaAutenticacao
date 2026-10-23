@@ -146,8 +146,14 @@ AE.3 revisada: tabelas no Init.sql do banco vazio, sem migrations nem regras de 
 
 [Implementação, testes e limites](docs/AE6_AUTENTICACAO_POR_CODIGO.md): duas rotas, store transacional integrado, Invoke v1 sem retry, descoberta email/v1, logs/spans fixos e 438 testes aprovados. Fluxo com PostgreSQL/SMTP4dev reais comprovado localmente, com bootstrap/Invoke AWS injetados. Pacotes/SAM conferidos, sem deploy. Próximo passo: AE.7, integração e regras Customer da API.
 
-[AE.7 da API concluída localmente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE7_API_ENVIO_E_ACESSO_CUSTOMER.md): transporte central e operações Customer conferidos, sem deploy. AE.8 está preparada localmente; o próximo passo é AE.9, consolidar Postman, diagramas e validação local conjunta.
+[AE.7 da API concluída localmente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE7_API_ENVIO_E_ACESSO_CUSTOMER.md): transporte central e operações Customer conferidos, sem deploy. AE.8 está preparada localmente; AE.9 consolidou Postman/diagramas e a validação local conjunta; a próxima etapa é AE.10, publicação e validação AWS autorizadas.
 
 ## AE.8 — publicação preparada
 
 [Workflows separados/reutilizáveis, Gateway e evidências locais](docs/AE8_WORKFLOWS_E_GATEWAY.md). EmailFunction continua privada; API/auth dependem do contrato email/v1. Nenhum workflow remoto ou deploy AWS executado nesta preparação.
+
+## AE.9 — comprovação conjunta local, 23/10/2026
+
+[Registro AE.9 e roteiro de publicação](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md): handler auth real com bootstrap injetado, PostgreSQL/Init.sql/grants reais, SDK Invoke real → SAM/EmailFunction → SMTP4dev e JWT aceito pela API real. Status antes do orçamento, Approved/Refused, titularidade/Inactive, falha SMTP e perda da caixa conferidos. **438 testes Serverless e 1.212 testes API aprovados**, zero falhas/ignorados na execução final. Nenhum código/token gravado em evidência; recursos descartáveis encerrados.
+
+[Postman atualizado](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/postman/README.md): duas rotas de código e sessão Customer para status/decisão, sem emissão pública de código. AE.9 concluída localmente; AE.10 exige PRs, bootstrap aprovado, AWS_EMAIL_ROLE_ARN, base/banco/email/API/auth/Gateway e validação integrada autorizada. Não foi executado workflow remoto ou acesso autenticado AWS nesta etapa.

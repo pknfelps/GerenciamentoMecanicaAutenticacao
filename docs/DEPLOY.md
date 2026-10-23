@@ -1,3 +1,5 @@
+> **AE.9 concluída localmente, 23/10/2026:** [roteiro conjunto, evidências e sequência AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md). Novo contrato não foi implantado na AWS. Usar request-code/verify-code e email privado, não os procedimentos históricos de customers/validate.
+
 # Publicação e operação das funções com SAM
 
 > **Procedimento vigente AE.8 (22/10/2026):** [auth/email, pré-requisitos, publicação imutável, rotas e descarte](AE8_WORKFLOWS_E_GATEWAY.md). A ordem é bootstrap/base → banco e email → API/auth → Gateway; descarte inverso por dependência. AWS_EMAIL_ROLE_ARN deve ser cadastrado após o bootstrap aprovado. As seções datadas abaixo preservam decisões/evidências anteriores; fluxos de documento isolado e caminhos antigos não representam o contrato novo.
