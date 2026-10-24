@@ -1,12 +1,12 @@
 # Funções serverless da oficina
 
-> **Extra AE — 22/10/2026:** AE.1–AE.6 preparadas e validadas nos seus escopos. EmailFunction e autenticação por código estão implementadas localmente; integração da API comprovada localmente na AE.7; workflows/Gateway preparados na [AE.8](docs/AE8_WORKFLOWS_E_GATEWAY.md); publicação AWS permanece na AE.10. [Fluxo e evidências AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Checklists oficiais preservados.
+> **23/10/2026 — AE concluída em hom:** AuthFunction e EmailFunction publicadas, com código/JWT/captura privada e SQL/limites/inativação conferidos. [Fluxo AWS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_VALIDACAO_HOM_2026-10-23.md) · [Conferências finais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_CONFERENCIAS_FINAIS_HOM_2026-10-23.md) · [Consolidação da entrega](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONSOLIDACAO_ENTREGA_2026-10-23.md). Sem certificar prd ou envio externo.
 
 AuthFunction .NET 10 autentica por documento e código de uso único, com desafio PostgreSQL e envio por Invoke à EmailFunction. EmailFunction concentra SMTP/MIME e captura no SMTP4dev, sem relay externo. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
 
 ## Estado e escopo
 
-Função/SAM/Gateway/JWT/SQL e telemetria foram implantados e conferidos em **hom**. A revisão 01225acd… publicou a Lambda 13 com VersionId S3 fixado e hash do ZIP igual ao código implantado. O ambiente foi destruído ao encerrar a E6 em 21/10/2026; não há endpoint atual. Prd/coexistência, carga e concorrência de publicação não foram comprovados; dispensas e limites não são testes aprovados.
+AuthFunction:14 e EmailFunction:1, stacks/roles próprias e alias email live foram conferidos em hom em 23/10/2026. A revisão histórica de auth:13/VersionId e o descarte de 21/10 permanecem evidências daquela data; hom foi recriado para AE/apresentação. Prd/coexistência, carga e concorrência de publicação não foram comprovados; dispensas e limites não são testes aprovados.
 
 [Revisão E6](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/REVISAO_E6_2026-10-21.md), [VersionId/artefatos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/VALIDACAO_PROTECAO_ARTEFATOS_2026-10-21.md), [aceite E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md) e [descarte/custos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md).
 
@@ -22,9 +22,9 @@ Função/SAM/Gateway/JWT/SQL e telemetria foram implantados e conferidos em **ho
 | EmailFunctionTests | Contrato, configuração, handler e captura SMTP4dev descartável |
 | ApplicationTests/ContractTests/InfrastructureTests/AuthFunctionTests | Regras, pacote, configuração/adaptadores/PostgreSQL e contrato do handler |
 
-Projetos net10.0, Npgsql 10.0.2/Dapper e pacote Auth.Contracts [1.0.0]. SAM CLI 1.167.0/CloudFormation entrega ZIP linux-x64/framework-dependent, runtime dotnet10/x86_64, 512 MB e timeout 15 s. Não há Dockerfile da função nem novo executável local; [Compose](compose.observability.yaml) inicia somente Collector para conferência manual.
+Projetos net10.0, Npgsql 10.0.2/Dapper e pacote Auth.Contracts [1.0.0]. SAM CLI 1.167.0/CloudFormation entrega ZIP linux-x64/framework-dependent, runtime dotnet10/x86_64; auth usa 512 MB/15 s e email 512 MB/6 s. Não há Dockerfile da função nem novo executável local; [Compose](compose.observability.yaml) inicia somente Collector para conferência manual.
 
-O código local implementa [request-code/verify-code e envio central](docs/AE6_AUTENTICACAO_POR_CODIGO.md). As evidências AWS anteriores descrevem a revisão antiga; não comprovam implantação do novo contrato.
+[Request-code/verify-code e envio central](docs/AE6_AUTENTICACAO_POR_CODIGO.md) foram comprovados localmente e na AWS em hom. Consultar os relatórios AE.10 para a revisão atual; as evidências E6 permanecem históricas.
 
 ## Contrato HTTP/JWT
 
@@ -39,9 +39,9 @@ JSON UTF-8 estrito de até 4 KiB, inclusive base64, sem extras/duplicações/nul
 
 Cliente ausente/Inactive/sem e-mail utilizável recebe 202 sem escrita/limpeza/envio. Cliente elegível persiste Pending antes do Invoke e só vira Ready após captura confirmada. Falha invalida quando possível sem mascarar a original; Pending nunca autentica. Cooldown de 60 s, cinco pedidos/hora, validade de cinco minutos e cinco tentativas; consumo atômico, sem transação aberta durante envio.
 
-JWT HS256 mantém UUID/nome cadastrado, role Customer e dez minutos, sem documento, e-mail, código, challengeId ou OS. Assinatura/consumo só retornam token após commit; sem refresh/replay/garantia de entrega única. A API aplica titularidade e regras de OS; Active/ClockSkew zero e decisão explícita foram implementados e conferidos localmente na AE.7.
+JWT HS256 mantém UUID/nome cadastrado, role Customer e dez minutos, sem documento, e-mail, código, challengeId ou OS. Assinatura/consumo só retornam token após commit; sem refresh/replay/garantia de entrega única. A API aplica titularidade e regras de OS; Active/ClockSkew zero e decisão explícita foram implementados na AE.7 e conferidos em hom na AE.10.
 
-A rota antiga/desconhecida retorna 404 no handler; método incorreto retorna 405/Allow: POST. **Publicar coordenadamente na AE.8:** o Terraform Gateway já exige as duas rotas na AE.8, sem Authorizer; sua implantação coordenada continua pendente. Contrato/handler novo não deve ser provisionado isoladamente no Gateway antigo.
+A rota antiga/desconhecida retorna 404 no handler; método incorreto retorna 405/Allow: POST. Gateway com OpenAPI auth 2.0.0 e as duas rotas foi implantado coordenadamente e conferido na AE.10, sem Authorizer ou endpoint público de envio. Em nova implantação, preservar essa coordenação e a versão numérica auth consumida pelo Gateway.
 
 ## Consumo do Auth.Contracts
 
@@ -113,47 +113,16 @@ No SAM CLI 1.167.0, CodeUri objeto preserva ZIP no sam delete; stack/templates o
 
 [Deploy/descarte completo](docs/DEPLOY.md) · [Contratos SSM](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) · [GitHub Actions](https://github.com/pknfelps/GerenciamentoMecanicaServerless/actions).
 
-O endpoint de negócio, quando provisionado, vem de /mecanica/ambiente/gateway/v2/endpoint, não de Function URL própria. Swagger/Postman pertencem à API e o contrato estático está neste repositório. Não há recurso AWS ativo a partir de exemplos/documentação; PR/publish/provision futuros ficam com o mantenedor.
+O endpoint de negócio, quando provisionado, vem de /mecanica/ambiente/gateway/v2/endpoint, não de Function URL própria. Swagger/Postman pertencem à API e o contrato estático está neste repositório. Exemplos não garantem disponibilidade contínua; consultar o catálogo/execução do ambiente. PR/publish/provision futuros ficam com o mantenedor.
 
-## Refinamento extra — autenticação do cliente e envio centralizado
+## Autenticação e envio — comprovação integrada
 
-**Decisão vigente de 22/10/2026; AE.6 implementada e validada localmente, publicação pendente.** O cliente solicitará um código em request-code e confirmará challengeId/code/document em verify-code. O código será enviado a SMTP4dev privado e consultado na ferramenta de captura, nunca devolvido no endpoint público ou gerado pelo mecânico. Depois, JWT Customer identifica o cliente e permite acessar suas próprias OSs; sem Authorizer/token por OS. Sem entrega real a caixas pessoais. Mensagens são efêmeras; desafios permanecem no PostgreSQL.
+AE.1–AE.10 concluídas em hom em 23/10/2026. Um repositório/solução, dois projetos de função e testes, dois SAMs/ZIPs/stacks/roles, entradas independentes auth/email e quatro workflows reutilizáveis. A renomeação/OIDC AE.2 preservou identidade GitHub, proteções e recursos auth; o nome anterior é histórico.
 
-AE.2: solução GerenciamentoMecanicaServerless, AuthFunction/AuthFunctionTests e estrutura EmailFunction/EmailFunctionTests criadas; template auth em templates/auth.yaml. GitHub/raiz/remote renomeados em 22/10/2026; transição OIDC inicial aplicada, proteções/Environments conferidos e auth-ci do novo nome aprovado. Plano final de retirada da confiança antiga aprovado/aplicado, policies conferidas e Terraform posterior sem diferenças; AE.2 concluída. Handler/template email e fluxo auth foram preparados nas AE.5/AE.6; workflows/publicação permanecem nas AE.8/AE.10. LA.1 é somente histórico; AE.1 está consolidada.
+Código capturado → confirmação → JWT Customer → status/Approved/Refused conferidos na API. Cinco tentativas, consumo único, limite de cinco admissões por hora, ausência de escrita/envio para cadastro inexistente/Inactive, limpeza SQL e rejeição após inativação comprovados. Falha SMTP impede afirmar envio do código; notificação de OS pode falhar sem desfazer o commit. Caixa vazia após recriação e novo código funcionando foram conferidos.
 
-API/auth invocarão somente a função de envio autorizada pelo IAM; essa função concentra SMTP e não acessa o banco/JWT. A API mantém titularidade/Active e regras da OS. A ordem de publicação/descarte e as permissões novas serão preparadas antes da ativação. A migração estrutural AE.2 não implementou o fluxo de código/e-mail; preservou as proteções GitHub e as permissões funcionais existentes.
+[Fluxo AWS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_VALIDACAO_HOM_2026-10-23.md) · [SQL/negativas finais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_CONFERENCIAS_FINAIS_HOM_2026-10-23.md) · [Ensaio local AE.9](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md) · [Consolidação E7](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONSOLIDACAO_ENTREGA_2026-10-23.md). [Preparação de workflows/Gateway](docs/AE8_WORKFLOWS_E_GATEWAY.md) e [contratos AE.1](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md) preservam detalhes de implementação.
 
-[Escopo neste repositório](docs/AUTENTICACAO_E_EMAIL_PLANEJADO.md) · [Plano extra AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) · [Histórico LA.1](docs/LA1_AUTHORIZER_ORCAMENTO_2026-10-22.md). Independente dos checklists oficiais E5/E6/E7.
+Mensagens são efêmeras, sem entrega externa. O operador lê a caixa privada; nenhum endpoint público devolve código. Auth e email não compartilham responsabilidades de domínio/banco. O envio é síncrono; processamento assíncrono independente de notificações permanece evolução futura, sem fila/outbox escolhida. LA.1 é somente histórico.
 
-[Contratos consolidados AE.1](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md): formatos, erros, limites dos desafios, envio v1, catálogos, rede e execução local. Somente documentação nesta etapa.
-
-## AE.2 — organização local
-
-A solução GerenciamentoMecanicaServerless.slnx agora reúne AuthFunction/AuthFunctionTests e EmailFunction/EmailFunctionTests. Assembly/namespace/handler da autenticação foram preservados; nomes físicos, contrato atual e recursos AWS não mudaram. EmailFunction é somente estrutura, sem handler/envio/testes funcionais até AE.5. Template auth em templates/auth.yaml e configuração samconfig.auth.toml. Plano de transição OIDC aprovado/aplicado; GitHub, pasta raiz e remote já renomeados, com checkout preservado. Auth-ci do novo nome aprovado; plano final aprovado/aplicado, confiança antiga retirada e Terraform posterior sem diferenças. AE.2 concluída. [Procedimento AE.2](docs/MIGRACAO_AE2_SERVERLESS.md).
-
-
-AE.3 revisada: tabelas no Init.sql do banco vazio, sem migrations nem regras de negócio no DDL. Na futura request-code, consultar cliente antes de qualquer gravação; inexistente gera somente log técnico sanitizado e resposta genérica, sem persistir limite/desafio ou invocar envio. Limite de cliente elegível usa UUID, sem índice HMAC de documento. [Contrato vigente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md).
-
-## AE.3 — operações transacionais preparadas
-
-[Criação, ativação, invalidação e consumo em C#](docs/AE3_OPERACOES_TRANSACIONAIS.md) implementados como componentes separados do handler atual. Regras de estado/prazo/tentativas no domínio; transações Npgsql com locks por UUID e revalidação do cadastro. Cliente inexistente sem gravação; assinatura antes do commit; tentativas negativas persistidas e uma confirmação retornada nas chamadas concorrentes. Regressão local final com limpeza: 328 testes aprovados, sem falhas/ignorados. [Grants restritos preparados e validados localmente](https://github.com/pknfelps/GerenciamentoMecanicaBancoDados/blob/develop/docs/AE3_PERMISSOES_AUTENTICACAO_2026-10-22.md); [limpeza implementada e validada](docs/AE3_LIMPEZA_EXPIRADOS.md), até 100 expirados por tabela após commit, sem retenção extra de 24 horas. AE.3 concluída no escopo local; ligação HTTP/Invoke na AE.6. Sem publicação AWS.
-
-## AE.5 — envio central preparado localmente
-
-[EmailFunction implementada e conferida](docs/AE5_EMAIL_FUNCTION.md): contrato v1 estrito, MailKit, deadline compartilhado de três segundos, logs sanitizados e SAM privado com alias/catálogo separados. Regressão: 419 testes aprovados, incluindo 91 novos. Primeira invocação pelo SAM capturou mensagem; falha SMTP tratada e caixa efêmera do Compose conferidas. Os recursos locais foram encerrados. API/AuthFunction ainda serão conectadas nas AE.7/AE.6; workflows/publicação e comprovação AWS permanecem pendentes.
-
-## AE.6 — autenticação por código concluída localmente
-
-[Implementação, testes e limites](docs/AE6_AUTENTICACAO_POR_CODIGO.md): duas rotas, store transacional integrado, Invoke v1 sem retry, descoberta email/v1, logs/spans fixos e 438 testes aprovados. Fluxo com PostgreSQL/SMTP4dev reais comprovado localmente, com bootstrap/Invoke AWS injetados. Pacotes/SAM conferidos, sem deploy. Próximo passo: AE.7, integração e regras Customer da API.
-
-[AE.7 da API concluída localmente](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE7_API_ENVIO_E_ACESSO_CUSTOMER.md): transporte central e operações Customer conferidos, sem deploy. AE.8 está preparada localmente; AE.9 consolidou Postman/diagramas e a validação local conjunta; a próxima etapa é AE.10, publicação e validação AWS autorizadas.
-
-## AE.8 — publicação preparada
-
-[Workflows separados/reutilizáveis, Gateway e evidências locais](docs/AE8_WORKFLOWS_E_GATEWAY.md). EmailFunction continua privada; API/auth dependem do contrato email/v1. Nenhum workflow remoto ou deploy AWS executado nesta preparação.
-
-## AE.9 — comprovação conjunta local, 23/10/2026
-
-[Registro AE.9 e roteiro de publicação](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md): handler auth real com bootstrap injetado, PostgreSQL/Init.sql/grants reais, SDK Invoke real → SAM/EmailFunction → SMTP4dev e JWT aceito pela API real. Status antes do orçamento, Approved/Refused, titularidade/Inactive, falha SMTP e perda da caixa conferidos. **438 testes Serverless e 1.212 testes API aprovados**, zero falhas/ignorados na execução final. Nenhum código/token gravado em evidência; recursos descartáveis encerrados.
-
-[Postman atualizado](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/postman/README.md): duas rotas de código e sessão Customer para status/decisão, sem emissão pública de código. AE.9 concluída localmente; AE.10 exige PRs, bootstrap aprovado, AWS_EMAIL_ROLE_ARN, base/banco/email/API/auth/Gateway e validação integrada autorizada. Não foi executado workflow remoto ou acesso autenticado AWS nesta etapa.
+A extra não certifica prd, carga, corrida de publicação ou todos os cenários de congelamento/extensão. EmailFunction mantém log JSON sanitizado; não recebeu OTel/dashboards/alertas próprios nesta entrega. Vídeo/PDF/submissão permanecem na E7.

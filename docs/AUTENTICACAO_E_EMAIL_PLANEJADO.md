@@ -1,4 +1,9 @@
-# Autenticação e envio centralizado — organização planejada
+# Autenticação e envio centralizado — desenho original e conclusão
+
+**Estado em 23/10/2026: implementado e comprovado em hom; AE.10 concluída.** [Consolidação atual](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONSOLIDACAO_ENTREGA_2026-10-23.md) · [Fluxo AWS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_VALIDACAO_HOM_2026-10-23.md) · [Conferências finais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_CONFERENCIAS_FINAIS_HOM_2026-10-23.md). Este arquivo conserva o desenho datado; imperativos e pendências abaixo descrevem o planejamento original. Para operação atual, seguir README/procedimentos vigentes. Não certifica prd ou envio externo.
+
+<details>
+<summary>Desenho e etapas históricas da extra AE</summary>
 
 **22/10/2026 — AE.1–AE.6 preparadas/validadas nos seus escopos; integração da API e publicação ainda pendentes.** O [plano central AE.1–AE.10](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/PLANO_EXTRA_AUTENTICACAO_E_EMAIL.md) substitui o Authorizer e o token por OS. GitHub/raiz/remote já se chamam GerenciamentoMecanicaServerless; autenticação atual preservada.
 
@@ -92,3 +97,5 @@ Restore/build Release sem avisos/erros, 438 testes sem falhas/ignorados, publish
 ## AE.9 — conjunto conferido localmente, 23/10/2026
 
 [Comprovação e documentos atuais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md). Postman/contratos/diagramas alinhados; 47 conferências manuais conjuntas e regressões de 438 Serverless/1.212 API aprovadas. Transporte real SDK/SAM/SMTP4dev; bootstrap auth injetado, sem fallback produtivo ou novo executável. OTP/JWT em memória; projeto descartável removido. Publicação/IAM/rede/runtime AWS continuam na AE.10; nenhum fluxo remoto foi executado.
+
+</details>
