@@ -1,6 +1,6 @@
 # EmailFunction — transporte SMTP centralizado
 
-Implementada e validada localmente na AE.5. Recebe o contrato Invoke v1 de código de acesso, orçamento ou mudança de status; valida o envelope e transmite uma mensagem ao SMTP4dev. Não consulta banco, emite JWT, monta conteúdo de negócio ou oferece endpoint público.
+Recebe o contrato Invoke v1 de código de acesso, orçamento ou mudança de status; valida o envelope e transmite uma mensagem ao SMTP4dev. Não consulta banco, emite JWT, monta conteúdo de negócio ou oferece endpoint público.
 
 Handler: `GerenciamentoMecanica.Serverless.EmailFunction::GerenciamentoMecanica.Serverless.EmailFunction.FunctionHandler::HandleAsync`.
 
@@ -16,6 +16,4 @@ A resposta `captured` confirma a aceitação SMTP do DATA, sem afirmar entrega e
 
 O payload não escolhe remetente, conexão, credenciais ou anexos. Um JSON técnico de conclusão por invocação, sem destinatário, código, corpo, configuração ou exceção completa. Sob o formato JSON nativo da Lambda, o JSON da aplicação aparece no campo `message` do registro da plataforma.
 
-[Contrato central](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md) · [Execução, testes, evidências e limites](../docs/AE5_EMAIL_FUNCTION.md) · [SAM privado](../templates/email.yaml).
-
-API/AuthFunction ainda serão conectadas nas AE.7/AE.6. Workflows e publicação permanecem na AE.8/AE.10; não há implantação AWS desta função nesta etapa.
+[Contrato Invoke](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_AUTENTICACAO_E_EMAIL.md) · [Execução local](../README.md#emailfunction-local) · [SAM privado](../templates/email.yaml).

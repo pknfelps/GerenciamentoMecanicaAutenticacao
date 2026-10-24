@@ -1,14 +1,6 @@
 # Funções serverless da oficina
 
-> **23/10/2026 — AE concluída em hom:** AuthFunction e EmailFunction publicadas, com código/JWT/captura privada e SQL/limites/inativação conferidos. [Fluxo AWS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_VALIDACAO_HOM_2026-10-23.md) · [Conferências finais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_CONFERENCIAS_FINAIS_HOM_2026-10-23.md) · [Consolidação da entrega](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONSOLIDACAO_ENTREGA_2026-10-23.md). Sem certificar prd ou envio externo.
-
 AuthFunction .NET 10 autentica por documento e código de uso único, com desafio PostgreSQL e envio por Invoke à EmailFunction. EmailFunction concentra SMTP/MIME e captura no SMTP4dev, sem relay externo. Login com senha de usuários internos permanece na [API](https://github.com/pknfelps/GerenciamentoMecanicaSistema/tree/develop).
-
-## Estado e escopo
-
-AuthFunction:14 e EmailFunction:1, stacks/roles próprias e alias email live foram conferidos em hom em 23/10/2026. A revisão histórica de auth:13/VersionId e o descarte de 21/10 permanecem evidências daquela data; hom foi recriado para AE/apresentação. Prd/coexistência, carga e concorrência de publicação não foram comprovados; dispensas e limites não são testes aprovados.
-
-[Revisão E6](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/REVISAO_E6_2026-10-21.md), [VersionId/artefatos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/VALIDACAO_PROTECAO_ARTEFATOS_2026-10-21.md), [aceite E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md) e [descarte/custos](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E6_E_CUSTOS_2026-10-21.md).
 
 ## Estrutura e arquitetura
 
@@ -23,8 +15,6 @@ AuthFunction:14 e EmailFunction:1, stacks/roles próprias e alias email live for
 | ApplicationTests/ContractTests/InfrastructureTests/AuthFunctionTests | Regras, pacote, configuração/adaptadores/PostgreSQL e contrato do handler |
 
 Projetos net10.0, Npgsql 10.0.2/Dapper e pacote Auth.Contracts [1.0.0]. SAM CLI 1.167.0/CloudFormation entrega ZIP linux-x64/framework-dependent, runtime dotnet10/x86_64; auth usa 512 MB/15 s e email 512 MB/6 s. Não há Dockerfile da função nem novo executável local; [Compose](compose.observability.yaml) inicia somente Collector para conferência manual.
-
-[Request-code/verify-code e envio central](docs/AE6_AUTENTICACAO_POR_CODIGO.md) foram comprovados localmente e na AWS em hom. Consultar os relatórios AE.10 para a revisão atual; as evidências E6 permanecem históricas.
 
 ## Contrato HTTP/JWT
 
@@ -72,17 +62,17 @@ sam validate --lint --template-file templates/auth.yaml --region us-east-1
 sam build --template-file templates/auth.yaml
 ```
 
-Publish local não implanta recursos. Conferir DLL/deps/runtimeconfig, Certificates/rds-ca.pem e Observability/observability.json/collector.yaml. Testes do handler são a execução integrada local, sem criar servidor/executável próprio. [Roteiro e resultados AE.6](docs/AE6_AUTENTICACAO_POR_CODIGO.md). Testes automatizados de transporte/Collector/telemetria da Lambda foram removidos por decisão; testes funcionais e MeterListener de integrações permanecem.
+Publish local não implanta recursos. Conferir DLL/deps/runtimeconfig, Certificates/rds-ca.pem e Observability/observability.json/collector.yaml. Testes do handler são a execução integrada local, sem criar servidor/executável próprio. [Casos de uso da autenticação](Application/Authentication). Testes automatizados de transporte/Collector/telemetria da Lambda foram removidos por decisão; testes funcionais e MeterListener de integrações permanecem.
 
 ## Inicialização e persistência
 
 Runtime__Environment=hom|prd e AWS_REGION=us-east-1 são obrigatórios ao inicializar autenticação real. Ausente/vazio/inválido falha, sem appsettings de banco/JWT ou alternativa local. O SDK usa a cadeia padrão de credenciais. Construir o handler/bootstrap não lê a configuração de autenticação; a primeira chamada de corpo válido pede o runtime. Observabilidade pode ser criada antes dessa leitura.
 
-SSM String/WithDecryption=false fornece nove campos: jwt-secret-arn/issuer/audience em base/v2 e endpoint/port/database-name/auth-secret-arn/auth-db-user/ssl-mode em database/v2. AWSCURRENT fornece JWT e credencial mecanica_auth; não usa Secret administrativo/database-api. Os valores ficam em memória e a inicialização bem-sucedida é reutilizada por handler. Falha não é armazenada como sucesso e permite nova tentativa; mudanças de Secret exigem nova inicialização.
+SSM String/WithDecryption=false fornece nove campos de banco/JWT e um segundo lote com alias/contrato email/v1. Banco/JWT: jwt-secret-arn/issuer/audience em base/v2 e endpoint/port/database-name/auth-secret-arn/auth-db-user/ssl-mode em database/v2. AWSCURRENT fornece JWT e credencial mecanica_auth; não usa Secret administrativo/database-api. Os valores ficam em memória e a inicialização bem-sucedida é reutilizada por handler. Falha não é armazenada como sucesso e permite nova tentativa; mudanças de Secret exigem nova inicialização.
 
 Leitura AWS tem prazo de oito segundos e retries Standard existentes. Handler reserva um segundo do RemainingTime para resposta. Conexão/comando têm cinco segundos cada, sujeitos ao prazo total. NpgsqlDataSource é fábrica reutilizável, Pooling=false/TLS VerifyFull/GssEncryptionMode=Disable; cada lookup abre e descarta conexão inclusive em erro/cancelamento. CA pública está em [Infrastructure/Certificates/rds-ca.pem](Infrastructure/Certificates/rds-ca.pem).
 
-SQL fixo parametrizado pelo documento canônico seleciona somente id/name/document/status de customers; não consulta orders; consulta sem resultado/Inactive não é falha de banco. Dados corrompidos/status desconhecido/duplicatas são técnicos. Handler implementa descarte explícito para testes/local; a AWS não garante callback de descarte ao encerrar o ambiente de execução.
+SQL fixo parametrizado consulta id/name/document/status/email de customers e opera somente os desafios/limites do cliente elegível; não consulta orders. Consulta sem resultado/Inactive não é falha de banco. Dados corrompidos/status desconhecido/duplicatas são técnicos. Handler implementa descarte explícito para testes/local; a AWS não garante callback de descarte ao encerrar o ambiente de execução.
 
 ## Observabilidade
 
@@ -92,7 +82,7 @@ Somente W3C traceparent seleciona pai OTLP; runtime/cabeçalho X-Ray não são p
 
 Layer Collector 0.22.0 (Collector 0.151.0) recebe OTLP em loopback e usa decouple, sem batch periódico adicional. Flush da aplicação compartilha até 500 ms entre sinais e preserva ao menos 500 ms para resposta. Filas limitadas/freeze/encerramento podem perder dados; sem entrega única/replay. Extensão lê License Key do Secrets Manager pela mesma role da função, sem chave em ZIP/variáveis/pipeline.
 
-Mecanica.Auth mede solicitações de código e confirmações/duração por resultado (incluindo code-requested/rate-limited); seu total não é número de logins, que requer outcome=authenticated; Mecanica.Integrations mede acessos PostgreSQL/SSM/Secrets, separando operação/finalidade/resultado. Uma chamada lógica AWS é contada depois dos retries internos, não por tentativa de transporte. [Procedimento](docs/OBSERVABILIDADE_LOCAL.md), [integrações](docs/METRICAS_INTEGRACOES.md) e [limites aceitos E5](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/ENCERRAMENTO_E5_2026-10-21.md).
+Mecanica.Auth mede solicitações de código e confirmações/duração por resultado (incluindo code-requested/rate-limited); seu total não é número de logins, que requer outcome=authenticated; Mecanica.Integrations mede acessos PostgreSQL/SSM/Secrets, separando operação/finalidade/resultado. Uma chamada lógica AWS é contada depois dos retries internos, não por tentativa de transporte.
 
 ## Workflows, artefatos e operação AWS
 
@@ -103,7 +93,7 @@ Mecanica.Auth mede solicitações de código e confirmações/duração por resu
 | [auth-provision](.github/workflows/auth-provision.yml) | [email-provision](.github/workflows/email-provision.yml) | Manual: environment/artifact_commit, rede/dependências/VersionId → deploy SAM |
 | [auth-destroy](.github/workflows/auth-destroy.yml) | [email-destroy](.github/workflows/email-destroy.yml) | Manual: consumidores ausentes → sam delete → ENIs/egress ausentes |
 
-Wrappers fixam componente; quatro reusable-*.yml concentram etapas comuns com allowlists. Develop/hom e main/prd, OIDC e filas por componente/ambiente; sem aprovação adicional. Required checks configuration/dotnet preservados como gates finais do auth-ci, abrangendo também EmailFunction e seu SAM. Role CI somente leitura do pacote; Environment AWS_ROLE_ARN para auth e **AWS_EMAIL_ROLE_ARN** para email. Ver [AE.8: pré-requisitos, artefatos, permissões e limites](docs/AE8_WORKFLOWS_E_GATEWAY.md).
+Wrappers fixam componente; quatro reusable-*.yml concentram etapas comuns com allowlists. Develop/hom e main/prd, OIDC e filas por componente/ambiente; sem aprovação adicional. Required checks configuration/dotnet preservados como gates finais do auth-ci, abrangendo também EmailFunction e seu SAM. Role CI somente leitura do pacote; Environment AWS_ROLE_ARN para auth e **AWS_EMAIL_ROLE_ARN** para email. Ver [Workflows Serverless](.github/workflows).
 
 Auth usa SG da base e role persistente do bootstrap. Stack administra função/versões/alias/logs, egress TCP 5432/443 e seis campos auth/v2. Gateway consome versão numérica, não alias live/$LATEST; cada nova versão precisa de atualização Gateway.
 
@@ -111,18 +101,30 @@ ZIP usa chave nativa sam/auth/ambiente/commit e bucket versionado. Template imut
 
 No SAM CLI 1.167.0, CodeUri objeto preserva ZIP no sam delete; stack/templates operacionais são removidos. Contratos, artefatos de outras revisões, bucket, IAM e SG da base persistem. Auth-destroy exige Gateway/VPC Link ausentes e, ao final, ausência de ENIs/egress; pendência bloqueia sem exclusão manual/espera automática. Ordem: Gateway → API/auth → banco/email → base/SMTP4dev. Email-destroy checa API/auth antes de remover somente a stack email.
 
-[Deploy/descarte completo](docs/DEPLOY.md) · [Contratos SSM](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) · [GitHub Actions](https://github.com/pknfelps/GerenciamentoMecanicaServerless/actions).
+[Contratos SSM](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/arquitetura/CONTRATOS_ENTRE_REPOSITORIOS.md) · [GitHub Actions](https://github.com/pknfelps/GerenciamentoMecanicaServerless/actions).
 
 O endpoint de negócio, quando provisionado, vem de /mecanica/ambiente/gateway/v2/endpoint, não de Function URL própria. Swagger/Postman pertencem à API e o contrato estático está neste repositório. Exemplos não garantem disponibilidade contínua; consultar o catálogo/execução do ambiente. PR/publish/provision futuros ficam com o mantenedor.
 
-## Autenticação e envio — comprovação integrada
+## EmailFunction local
 
-AE.1–AE.10 concluídas em hom em 23/10/2026. Um repositório/solução, dois projetos de função e testes, dois SAMs/ZIPs/stacks/roles, entradas independentes auth/email e quatro workflows reutilizáveis. A renomeação/OIDC AE.2 preservou identidade GitHub, proteções e recursos auth; o nome anterior é histórico.
+A execução integrada local usa o Compose da API e o emulador Invoke do SAM. Inicializar db/smtp e o banco vazio conforme os READMEs da API e do banco. A rede padrão do Compose é gerenciamento-mecanica_default.
 
-Código capturado → confirmação → JWT Customer → status/Approved/Refused conferidos na API. Cinco tentativas, consumo único, limite de cinco admissões por hora, ausência de escrita/envio para cadastro inexistente/Inactive, limpeza SQL e rejeição após inativação comprovados. Falha SMTP impede afirmar envio do código; notificação de OS pode falhar sem desfazer o commit. Caixa vazia após recriação e novo código funcionando foram conferidos.
+Na raiz Serverless, construir e iniciar a função em terminal dedicado com credenciais AWS fictícias. O template exige IDs fictícios somente para interpolação local; o emulador não provisiona recursos:
 
-[Fluxo AWS](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_VALIDACAO_HOM_2026-10-23.md) · [SQL/negativas finais](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE10_CONFERENCIAS_FINAIS_HOM_2026-10-23.md) · [Ensaio local AE.9](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/AE9_VALIDACAO_LOCAL_E_DOCUMENTACAO.md) · [Consolidação E7](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONSOLIDACAO_ENTREGA_2026-10-23.md). [Preparação de workflows/Gateway](docs/AE8_WORKFLOWS_E_GATEWAY.md) e [contratos AE.1](https://github.com/pknfelps/GerenciamentoMecanicaSistema/blob/develop/docs/CONTRATOS_EXTRA_AUTENTICACAO_E_EMAIL.md) preservam detalhes de implementação.
+~~~powershell
+sam build --template-file templates/email.yaml --build-dir artifacts/sam-email
+$env:AWS_ACCESS_KEY_ID = 'local'
+$env:AWS_SECRET_ACCESS_KEY = 'local'
+$env:AWS_REGION = 'us-east-1'
+$env:AWS_EC2_METADATA_DISABLED = 'true'
+Remove-Item Env:AWS_SESSION_TOKEN, Env:AWS_PROFILE -ErrorAction SilentlyContinue
+$parameters = @(
+  'Environment=hom', 'ArtifactCommit=0000000000000000000000000000000000000000',
+  'WorkloadSubnetIds=subnet-00000000000000001,subnet-00000000000000002',
+  'EmailSecurityGroupId=sg-00000000000000001', 'NlbSecurityGroupId=sg-00000000000000002',
+  'SmtpHost=smtp', 'SmtpPort=25', 'ZipKey=sam/email/hom/local.zip'
+)
+sam local start-lambda --template-file artifacts/sam-email/template.yaml --host 0.0.0.0 --port 3001 --docker-network gerenciamento-mecanica_default --parameter-overrides $parameters
+~~~
 
-Mensagens são efêmeras, sem entrega externa. O operador lê a caixa privada; nenhum endpoint público devolve código. Auth e email não compartilham responsabilidades de domínio/banco. O envio é síncrono; processamento assíncrono independente de notificações permanece evolução futura, sem fila/outbox escolhida. LA.1 é somente histórico.
-
-A extra não certifica prd, carga, corrida de publicação ou todos os cenários de congelamento/extensão. EmailFunction mantém log JSON sanitizado; não recebeu OTel/dashboards/alertas próprios nesta entrega. Vídeo/PDF/submissão permanecem na E7.
+O listener acessível ao container é exclusivo do ensaio local; limitar a porta 3001 ao computador/rede de desenvolvimento. A API no Docker Desktop usa Email__InvocationEndpoint=http://host.docker.internal:3001 e Email__FunctionName=EmailFunction. Encerrar o SAM com Ctrl+C. Credenciais fictícias não devem ser persistidas no perfil AWS; na inicialização real auth continua exigindo configuração AWS, sem alternativa de banco/JWT local. Os testes do handler usam bootstrap injetado.
